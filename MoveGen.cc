@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /* Move generator.
 
-   Copyright (C) 2025 David Bergström  */
+   Copyright (C) 2026 David Bergström  */
 
 #include "MoveGen.h"
 
