@@ -91,6 +91,8 @@ namespace DSchack {
     return nodeCount;
   }
 
+  static bool gShouldExit = false;
+
   static void executeUCI(Engine &engine, std::span<std::string_view> parts)
   {
     std::string_view command = parts[0];
@@ -100,6 +102,16 @@ namespace DSchack {
       std::cout << "id name DSchack\n";
       std::cout << "id author David Bergström\n";
       std::cout << "uciok\n";
+      return;
+    }
+
+    if (command == "isready") {
+      std::cout << "readyok\n";
+      return;
+    }
+
+    if (command == "quit") {
+      gShouldExit = true;
       return;
     }
 
@@ -295,6 +307,9 @@ namespace DSchack {
 	continue;
 
       executeUCI(engine, parts);
+
+      if (gShouldExit)
+	break;
     }
   }
 }
