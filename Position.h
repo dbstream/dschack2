@@ -6,7 +6,9 @@
 #pragma once
 
 #include <optional>
+#include <span>
 #include <string>
+#include <string_view>
 #include <stdint.h>
 #include <vector>
 
@@ -402,6 +404,33 @@ namespace DSchack {
       return res;
     }
 
+    /** attackersByOcc: get the bitboard of attackers of a
+	particular square.
+    @occ: blockers to consider.
+    @sq: square to test.
+    @color: attacking player.  */
+    constexpr Bitboard attackersByOcc(Bitboard occ, int sq, Color color) const
+    {
+      Bitboard res = 0;
+      if (color == WHITE)
+	res |= pieces(color, PAWN) & PawnAttackersU(sq);
+      else
+	res |= pieces(color, PAWN) & PawnAttackersD(sq);
+
+      res |= pieces(color, KNIGHT) & KnightAttacks(sq);
+      res |= pieces(color, KING) & KingAttacks(sq);
+
+      Bitboard bishopAttacks = BishopAttacks(occ, sq);
+      Bitboard rookAttacks = RookAttacks(occ, sq);
+      Bitboard queenAttacks = bishopAttacks | rookAttacks;
+
+      res |= pieces(color, BISHOP) & bishopAttacks;
+      res |= pieces(color, ROOK) & rookAttacks;
+      res |= pieces(color, QUEEN) & queenAttacks;
+
+      return res;
+    }
+
     /** attackedByOcc: test whether a square is attacked.
     @occ: blockers to consider.
     @sq: square to test.
@@ -510,13 +539,13 @@ namespace DSchack {
     PROMOTE_QUEEN = 1,
     PROMOTE_KNIGHT = 2,
     PROMOTE_BISHOP = 3,
-    PROMOTE_PAWN = 4
+    PROMOTE_ROOK = 4
   };
 
   /** ParseFEN: parse a FEN string into a Position object.
   @parts: the parts of the FEN string.
   Returns nullopt if the FEN is invalid. */
-  std::optional<Position> ParseFEN(const std::vector<std::string> &parts);
+  std::optional<Position> ParseFEN(std::span<const std::string_view> parts);
 
   /** ParseMove: parse a move.
   @pos: Position.
@@ -525,5 +554,6 @@ namespace DSchack {
   @promotion: PROMOTE_NONE or the promoted-to piece if the
               move promotes a pawn.
   Returns nullopt if the move is invalid. */
-  std::optional<Move> ParseMove(int fromSq, int toSq, PromoteType promotion);
+  std::optional<Move> ParseMove(const Position &pos, int fromSq, int toSq,
+				PromoteType promotion);
 } // namespace DSchack

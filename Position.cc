@@ -3,8 +3,6 @@
 
    Copyright (C) 2026 David Bergström  */
 
-#include <string_view>
-
 #include "MoveGen.h"
 #include "Position.h"
 
@@ -84,7 +82,7 @@ namespace DSchack {
     }
   }
 
-  static bool parsePiecePlacement(Position &pos, const std::string &pieces)
+  static bool parsePiecePlacement(Position &pos, std::string_view pieces)
   {
     int rank = 7, file = 0;
     for (char c : pieces) {
@@ -112,7 +110,53 @@ namespace DSchack {
     return rank == 0 && file == 8;
   }
 
-  std::optional<Position> ParseFEN(const std::vector<std::string> &parts)
+  static bool isPositionLegal(const Position &pos)
+  {
+    Color us = pos.sideToMove();
+    Color them = (us == WHITE) ? BLACK : WHITE;
+
+    // Both players must have exactly one king.
+    if (Popcount(pos.pieces(WHITE, KING)) != 1) return false;
+    if (Popcount(pos.pieces(BLACK, KING)) != 1) return false;
+
+    // There are no pawns on the first or eight ranks.
+    if (pos.pieces(BOTH, PAWN) & (BB_RANK_1 | BB_RANK_8))
+      return false;
+
+    // If there is a castling right, there is also a king and rook.
+    if (pos.castlingRights(WHITE) & (KINGSIDE | QUEENSIDE)) {
+      if (!(pos.pieces(WHITE, KING) & BB(E1)))
+	return false;
+    }
+    if (pos.castlingRights(BLACK) & (KINGSIDE | QUEENSIDE)) {
+      if (!(pos.pieces(BLACK, KING) & BB(E8)))
+	return false;
+    }
+    if (pos.castlingRights(WHITE) & QUEENSIDE) {
+      if (!(pos.pieces(WHITE, ROOK) & BB(A1)))
+	return false;
+    }
+    if (pos.castlingRights(WHITE) & KINGSIDE) {
+      if (!(pos.pieces(WHITE, ROOK) & BB(H1)))
+	return false;
+    }
+    if (pos.castlingRights(BLACK) & QUEENSIDE) {
+      if (!(pos.pieces(BLACK, ROOK) & BB(A8)))
+	return false;
+    }
+    if (pos.castlingRights(BLACK) & KINGSIDE) {
+      if (!(pos.pieces(BLACK, ROOK) & BB(H8)))
+	return false;
+    }
+
+    // We cannot capture the opponent's king.
+    if (pos.attackers(us, Sq(pos.pieces(them, KING))))
+      return false;
+
+    return true;
+  }
+
+  std::optional<Position> ParseFEN(std::span<const std::string_view> parts)
   {
     if (parts.size() != 6)
       return std::nullopt;
@@ -176,52 +220,198 @@ namespace DSchack {
 
     // Position validations.
 
-    // Both players must have exactly one king.
-    if (Popcount(pos.pieces(WHITE, KING)) != 1) return std::nullopt;
-    if (Popcount(pos.pieces(BLACK, KING)) != 1) return std::nullopt;
-
-    // There are no pawns on the first or eight ranks.
-    if (pos.pieces(BOTH, PAWN) & (BB_RANK_1 | BB_RANK_8))
+    if (!isPositionLegal(pos))
       return std::nullopt;
-
-    // If there is a castling right, there is also a king and rook.
-    if (pos.castlingRights(WHITE) & (KINGSIDE | QUEENSIDE)) {
-      if (!(pos.pieces(WHITE, KING) & BB(E1)))
-	return std::nullopt;
-    }
-    if (pos.castlingRights(BLACK) & (KINGSIDE | QUEENSIDE)) {
-      if (!(pos.pieces(BLACK, KING) & BB(E8)))
-	return std::nullopt;
-    }
-    if (pos.castlingRights(WHITE) & QUEENSIDE) {
-      if (!(pos.pieces(WHITE, ROOK) & BB(A1)))
-	return std::nullopt;
-    }
-    if (pos.castlingRights(WHITE) & KINGSIDE) {
-      if (!(pos.pieces(WHITE, ROOK) & BB(H1)))
-	return std::nullopt;
-    }
-    if (pos.castlingRights(BLACK) & QUEENSIDE) {
-      if (!(pos.pieces(BLACK, ROOK) & BB(A8)))
-	return std::nullopt;
-    }
-    if (pos.castlingRights(BLACK) & KINGSIDE) {
-      if (!(pos.pieces(BLACK, ROOK) & BB(H8)))
-	return std::nullopt;
-    }
-
-    // We cannot capture the opponent's king.
-    if (pos.attackers(us, Sq(pos.pieces(them, KING))))
-      return std::nullopt;
-
-    // We have at least one legal move.
-    {
-      Move buffer[1000];
-      Move *pEnd = GenerateLegalMoves(pos, &buffer[0]);
-      if (pEnd == &buffer[0])
-	return std::nullopt;
-    }
 
     return pos;
+  }
+
+  std::optional<Move> ParseMove(const Position &pos, int fromSq, int toSq,
+				PromoteType promotion)
+  {
+    Color us = pos.sideToMove();
+    Color them = (us == WHITE) ? BLACK : WHITE;
+
+    Bitboard occ = pos.pieces(BOTH, ALL);
+
+    // Make sure there is actually a piece on that square.
+    if (!(pos.pieces(us, ALL) & BB(fromSq)))
+      return std::nullopt;
+
+    // Prevent cannibalism.
+    if (pos.pieces(us, ALL) & BB(toSq))
+      return std::nullopt;
+
+    bool isCapture = false;
+    bool isCastle = false;
+    bool isEnpassant = false;
+    bool isPromotion = false;
+    bool isDoublePush = false;
+
+    if (pos.pieces(them, ALL) & BB(toSq))
+      isCapture = true;
+
+    // Make sure that the from and to squares are legal.
+    PieceType piece = pos.pieceOnSquare(fromSq);
+    if (piece == BISHOP) {
+      if (!(BishopAttacks(occ, fromSq) & BB(toSq)))
+	return std::nullopt;
+    } else if (piece == ROOK) {
+      if (!(RookAttacks(occ, fromSq) & BB(toSq)))
+	return std::nullopt;
+    } else if (piece == QUEEN) {
+      Bitboard atts = BishopAttacks(occ, fromSq);
+      atts |= RookAttacks(occ, fromSq);
+      if (!(atts & BB(toSq)))
+	return std::nullopt;
+    } else if (piece == KNIGHT) {
+      if (!(KnightAttacks(fromSq) & BB(toSq)))
+	return std::nullopt;
+    } else if (piece == KING) {
+      if (!(KingAttacks(fromSq) & BB(toSq))) {
+	isCastle = true;
+      }
+    } else if (us == WHITE) { // white pawn
+      Bitboard epMask = 0;
+      if (pos.enpassantFile() != -1)
+	epMask = BB(SqFR(pos.enpassantFile(), 5));
+      if (!(PawnAttacksU(occ | epMask, fromSq) & BB(toSq)))
+	return std::nullopt;
+
+      if (toSq - fromSq == 2 * BBNorth)
+	isDoublePush = true;
+      else if (BB(toSq) & epMask)
+	isEnpassant = true;
+      else if (BB(toSq) & BB_RANK_8)
+	isPromotion = true;
+    } else { // black pawn
+      Bitboard epMask = 0;
+      if (pos.enpassantFile() != -1)
+	epMask = BB(SqFR(pos.enpassantFile(), 2));
+      if (!(PawnAttacksD(occ | epMask, fromSq) & BB(toSq)))
+	return std::nullopt;
+
+      if (toSq - fromSq == 2 * BBSouth)
+	isDoublePush = true;
+      else if (BB(toSq) & epMask)
+	isEnpassant = true;
+      else if (BB(toSq) & BB_RANK_1)
+	isPromotion = true;
+    }
+
+    if (isPromotion) {
+      // If this move promotes a pawn, there must be a promotion specified.
+      if (promotion == PROMOTE_NONE)
+	return std::nullopt;
+    } else {
+      // If this move doesn't promote a pawn, no promotion may be specified.
+      if (promotion != PROMOTE_NONE)
+	return std::nullopt;
+    }
+
+    if (isCastle) {
+      int kingSq, checkL, targetL, checkR, targetR;
+      Bitboard emptyL, emptyR;
+      if (us == WHITE) {
+	kingSq = E1;
+	checkL = D1;
+	targetL = C1;
+	emptyL = BB(B1) | BB(C1) | BB(D1);
+	checkR = F1;
+	targetR = G1;
+	emptyR = BB(F1) | BB(G1);
+      } else {
+	kingSq = E8;
+	checkL = D8;
+	targetL = C8;
+	emptyL = BB(B8) | BB(C8) | BB(D8);
+	checkR = F8;
+	targetR = G8;
+	emptyR = BB(F8) | BB(G8);
+      }
+
+      if (fromSq != kingSq)
+	return std::nullopt;
+
+      // Cannot castle when in check.
+      if (pos.attackedByOcc(occ, kingSq, them))
+	return std::nullopt;
+
+      if (toSq == targetL) { // queenside castling
+	if (!(pos.castlingRights(us) & QUEENSIDE))
+	  return std::nullopt;
+	if (occ & emptyL)
+	  return std::nullopt;
+	if (pos.attackedByOcc(occ, checkL, them))
+	  return std::nullopt;
+	if (pos.attackedByOcc(occ, targetL, them))
+	  return std::nullopt;
+	return Move::makeCastles(fromSq, toSq);
+      } else if (toSq == targetR) { // kingside castling
+	if (!(pos.castlingRights(us) & KINGSIDE))
+	  return std::nullopt;
+	if (occ & emptyR)
+	  return std::nullopt;
+	if (pos.attackedByOcc(occ, checkR, them))
+	  return std::nullopt;
+	if (pos.attackedByOcc(occ, targetR, them))
+	  return std::nullopt;
+	return Move::makeCastles(fromSq, toSq);
+      } else
+	return std::nullopt;
+    }
+
+    if (piece == KING) {
+      // The to-square of the king cannot be under attack.
+      if (pos.attackedByOcc(occ & ~BB(fromSq), toSq, them))
+	return std::nullopt;
+      if (isCapture)
+	return Move::makeCapture(fromSq, toSq, KING,
+				 pos.pieceOnSquare(toSq));
+      else
+	return Move::makeRegular(fromSq, toSq, KING);
+    }
+
+    Bitboard removeMask = BB(toSq);
+    if (isEnpassant)
+      removeMask = BB(toSq + ((us == WHITE) ? BBSouth : BBNorth));
+
+    Bitboard newOcc = occ & ~removeMask;
+    newOcc ^= BB(fromSq) ^ BB(toSq);
+
+    int kingSq = Sq(pos.pieces(us, KING));
+    if (pos.attackersByOcc(newOcc, kingSq, them) & ~removeMask) {
+      // The move would leave us in check.
+      return std::nullopt;
+    }
+
+    if (isEnpassant)
+      return Move::makeEnpassant(fromSq, toSq);
+
+    if (isPromotion) {
+      PieceType promotionPiece;
+      switch (promotion) {
+      case PROMOTE_QUEEN: promotionPiece = QUEEN; break;
+      case PROMOTE_KNIGHT: promotionPiece = KNIGHT; break;
+      case PROMOTE_BISHOP: promotionPiece = BISHOP; break;
+      case PROMOTE_ROOK: promotionPiece = ROOK; break;
+      default: __builtin_unreachable();
+      }
+
+      if (isCapture)
+	return Move::makeCapturingPromotion(fromSq, toSq,
+					    pos.pieceOnSquare(toSq),
+					    promotionPiece);
+      else
+	return Move::makePromotion(fromSq, toSq, promotionPiece);
+    }
+
+    if (isCapture)
+      return Move::makeCapture(fromSq, toSq, piece, pos.pieceOnSquare(toSq));
+
+    if (isDoublePush)
+      return Move::makeDoublePush(fromSq, toSq);
+
+    return Move::makeRegular(fromSq, toSq, piece);
   }
 } // namespace DSchack

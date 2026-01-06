@@ -1,77 +1,55 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /* DSchack.
 
-   Copyright (C) 2026 David Bergström  */
+   Copyright (C) 2026 David Bergström
+
+This is the engine entry point.  It implements the receiver end of
+the UCI protocol, which is used for user<->engine communication.  */
 
 #include <iostream>
+#include <span>
+#include <stdio.h>
+#include <string.h>
+#include <string>
+#include <vector>
 
 #include "Bitboard.h"
+#include "Engine.h"
 #include "MoveGen.h"
 #include "Position.h"
 
 namespace DSchack {
-  static const std::vector<std::string> startpos_fen = {
-    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR",
-    "w",
-    "KQkq",
-    "-",
-    "0",
-    "1"
-  };
+  static const std::string_view STARTPOS_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
-  static const std::vector<std::string> kiwipete_fen = {
-    "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R",
-    "w",
-    "KQkq",
-    "-",
-    "0",
-    "1"
-  };
+  static constexpr std::vector<std::string_view> splitOnWhitespace(std::string_view s)
+  {
+      std::vector<std::string_view> parts;
 
-  static const std::vector<std::string> position_3 = {
-    "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8",
-    "w",
-    "-",
-    "-",
-    "0",
-    "1"
-  };
+      while (s.size()) {
+	size_t index = s.find_first_of(" \t\n\f\v\r");
+	if (index == std::string_view::npos)
+	  index = s.size();
 
-  static const std::vector<std::string> position_4 = {
-    "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1",
-    "w",
-    "kq",
-    "-",
-    "0",
-    "1"
-  };
+	if (index)
+	  parts.push_back(s.substr(0, index));
+	if (index == s.size())
+	  break;
 
-  static const std::vector<std::string> position_4_mirrored = {
-    "r2q1rk1/pP1p2pp/Q4n2/bbp1p3/Np6/1B3NBn/pPPP1PPP/R3K2R",
-    "b",
-    "KQ",
-    "-",
-    "0",
-    "1"
-  };
+	s = s.substr(index + 1);
+      }
 
-  static const std::vector<std::string> position_5 = {
-    "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R",
-    "w",
-    "KQ",
-    "-",
-    "1",
-    "8"
-  };
+      return parts;
+  }
 
-  static const std::vector<std::string> position_6 = {
-    "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1",
-    "w",
-    "-",
-    "-",
-    "0",
-    "10"
-  };
+  static const std::vector<std::string_view> startpos_fen = splitOnWhitespace(STARTPOS_FEN);
+
+  static int numberOfMoves(const Position &pos)
+  {
+    Move buffer[300];
+    Move *pEnd = GenerateLegalMoves(pos, buffer);
+
+    return pEnd - &buffer[0];
+  }
 
   template<bool Print>
   static uint64_t perft(const Position &pos, int depth)
@@ -99,26 +77,139 @@ namespace DSchack {
     return nodeCount;
   }
 
+  static void executeUCI(Engine &engine, std::span<std::string_view> parts)
+  {
+    std::string_view command = parts[0];
+    parts = parts.subspan(1);
+
+    if (command == "uci") {
+      std::cout << "id name DSchack\n";
+      std::cout << "id author David Bergström\n";
+      std::cout << "uciok\n";
+      return;
+    }
+
+    if (command == "position") {
+      if (parts.empty()) {
+	std::cout << "protocol error: received 'position' without a FEN or startpos\n";
+	return;
+      }
+
+      Position pos;
+      if (parts[0] == "fen") {
+	parts = parts.subspan(1);
+	if (parts.size() < 6) {
+	  std::cout << "protocol error: incomplete FEN string\n";
+	  return;
+	}
+	std::optional<Position> optPos = ParseFEN(parts.subspan(0, 6));
+	if (!optPos) {
+	  std::cout << "protocol error: invalid FEN string\n";
+	  return;
+	}
+	pos = optPos.value();
+	parts = parts.subspan(6);
+      } else if (parts[0] == "startpos") {
+	parts = parts.subspan(1);
+	std::optional<Position> optPos = ParseFEN(startpos_fen);
+	if (!optPos) {
+	  std::cout << "internal error: failed to parse startpos_fen\n";
+	  return;
+	}
+	pos = optPos.value();
+      } else {
+	std::cout << "protocol error: '" << parts[0] << "' is not implemented\n";
+	return;
+      }
+
+      std::vector<Move> moves;
+      if (!parts.empty()) {
+	if (parts[0] != "moves") {
+	  std::cout << "protocol error: expected 'moves' but found '" << parts[0] << "'\n";
+	  return;
+	}
+
+	parts = parts.subspan(1);
+	for (std::string_view s : parts) {
+	  if (s.size() != 4 && s.size() != 5) {
+	    std::cout << "protocol error: invalid move '" << s << "'\n";
+	    return;
+	  }
+	  if (s[0] < 'a' || s[0] > 'h' || s[1] < '1' || s[1] > '8'
+	   || s[2] < 'a' || s[2] > 'h' || s[3] < '1' || s[3] > '8') {
+	    std::cout << "protocol error: invalid move '" << s << "'\n";
+	    return;
+	  }
+
+	  int fromSq = SqFR(s[0] - 'a', s[1] - '1');
+	  int toSq = SqFR(s[2] - 'a', s[3] - '1');
+	  PromoteType promote = PROMOTE_NONE;
+	  if (s.size() == 5) {
+	    switch (s[4]) {
+	    case 'q': case 'Q': promote = PROMOTE_QUEEN; break;
+	    case 'n': case 'N': promote = PROMOTE_KNIGHT; break;
+	    case 'b': case 'B': promote = PROMOTE_BISHOP; break;
+	    case 'r': case 'R': promote = PROMOTE_ROOK; break;
+	    default:
+	      std::cout << "protocol error: invalid move '" << s << "'\n";
+	      return;
+	    }
+	  }
+
+	  std::optional<Move> optMove = ParseMove(pos, fromSq, toSq, promote);
+	  if (!optMove) {
+	    std::cout << "protocol error: illegal move '" << s << "'\n";
+	    return;
+	  }
+
+	  pos.makeMove(optMove.value());
+	  moves.push_back(optMove.value());
+
+	  if (numberOfMoves(pos) == 0) {
+	    std::cout << "protocol error: the game is over after '" << s << "'\n";
+	    return;
+	  }
+	}
+      }
+
+      if (engine.searchInProgress()) {
+	std::cout << "protocol error: search is already in progress\n";
+	return;
+      }
+
+      engine.setPosition(pos, moves);
+    }
+  }
+
   void start()
   {
+    setvbuf(stdin, nullptr, _IOLBF, 0);
+    setvbuf(stdout, nullptr, _IOLBF, 0);
+
     std::cout << "DSchack by David Bergström\n";
     InitBitboards();
     TestBitboards();
     InitZobristTables();
 
-    std::optional<Position> opt_pos = ParseFEN(kiwipete_fen);
+    Engine engine;
 
-    if (!opt_pos) {
-      std::cout << "Failed to parse startpos_fen??\n";
-      return;
-    }
+    engine.setPosition(ParseFEN(startpos_fen).value(), {});
 
-    Position pos = opt_pos.value();
-    std::cout << "Startpos hash=" << pos.hash() << "\n";
-    for (int i = 1; i <= 8; i++) {
-      std::cout << "Perft(" << i << ")\n";
-      uint64_t nodeCount = perft<true>(pos, i);
-      std::cout << "\nTotal: " << nodeCount << "\n";
+    // Process input commands, line by line.
+
+    char *lineptr = nullptr;
+    size_t n = 0;
+    for (;;) {
+      ssize_t nread = getline(&lineptr, &n, stdin);
+      if (nread < 0)
+	break;
+
+      // Split the line into whitespace-separated parts.
+      std::vector<std::string_view> parts = splitOnWhitespace(lineptr);
+      if (parts.empty())
+	continue;
+
+      executeUCI(engine, parts);
     }
   }
 }
