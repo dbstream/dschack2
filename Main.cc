@@ -21,6 +21,20 @@ the UCI protocol, which is used for user<->engine communication.  */
 namespace DSchack {
   static const std::string_view STARTPOS_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
+  static constexpr int parseInt(std::string_view s)
+  {
+    int value = 0;
+    for (char c : s) {
+      if (c < '0' || c > '9')
+	return -1;
+      if (value > 100000000)
+	return -1;
+      value *= 10;
+      value += c - '0';
+    }
+    return value;
+  }
+
   static constexpr std::vector<std::string_view> splitOnWhitespace(std::string_view s)
   {
       std::vector<std::string_view> parts;
@@ -178,7 +192,78 @@ namespace DSchack {
       }
 
       engine.setPosition(pos, moves);
+      return;
     }
+
+    if (command == "go") {
+      enum {
+	NONE,
+	PERFT,
+	DEPTH,
+	WTIME,
+	BTIME,
+	WINC,
+	BINC,
+	MOVETIME,
+	MOVESTOGO,
+      };
+
+      int perft_ = -1;
+      int depth = 0;
+      int wtime = 0;
+      int btime = 0;
+      int winc = 0;
+      int binc = 0;
+      int movetime = 0;
+      int movestogo = 0;
+      bool infinite = false;
+
+      // Note: we ignore any unknown fields in UCI 'go'.
+      int field = NONE;
+      for (std::string_view s : parts) {
+	if (field) {
+	  int value = parseInt(s);
+	  if (value < 0)
+	    continue;
+	  switch (field) {
+	  case PERFT: perft_ = value; break;
+	  case DEPTH: depth = value; break;
+	  case WTIME: wtime = value; break;
+	  case BTIME: btime = value; break;
+	  case WINC: winc = value; break;
+	  case BINC: binc = value; break;
+	  case MOVETIME: movetime = value; break;
+	  case MOVESTOGO: movestogo = value; break;
+	  }
+	}
+
+	if (s == "perft") field = PERFT;
+	else if (s == "depth") field = DEPTH;
+	else if (s == "wtime") field = WTIME;
+	else if (s == "btime") field = BTIME;
+	else if (s == "winc") field = WINC;
+	else if (s == "binc") field = BINC;
+	else if (s == "movetime") field = MOVETIME;
+	else if (s == "movestogo") field = MOVESTOGO;
+	else field = NONE;
+      }
+
+      if (engine.searchInProgress()) {
+	std::cout << "protocol error: search is already in progress\n";
+	return;
+      }
+
+      if (perft_ >= 0) {
+	uint64_t nodeCount = perft<true>(engine.getPosition(), perft_);
+	std::cout << "\n";
+	std::cout << "Total: " << nodeCount << "\n";
+      } else
+	engine.go(depth, wtime, btime, winc, binc,
+		  movetime, movestogo, infinite);
+      return;
+    }
+
+    std::cout << "protocol error: unimplemented command '" << command << "'\n";
   }
 
   void start()
