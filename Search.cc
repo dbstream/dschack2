@@ -374,6 +374,8 @@ namespace DSchack {
     Score Quiesce(const Position &pos, int ply,
 		  int repPly, Score alpha, Score beta)
     {
+      m_pvLength[ply] = ply;
+
       if (ply >= MAX_PLY)
 	return Evaluate(pos);
 
@@ -521,6 +523,8 @@ namespace DSchack {
     {
       m_numNodes = 0;
       m_numRootMovesExamined = 0;
+
+      m_pvLength[0] = 0;
 
       Move bestMove;
       Score bestScore(CHECKMATE_SCORE);
