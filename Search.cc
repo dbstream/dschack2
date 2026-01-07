@@ -500,7 +500,7 @@ namespace DSchack {
 	  if (score > alpha) {
 	    alpha = score;
 	    if (score >= beta) {
-	      movePicker.betaCutoff(300 + 250 * depth);
+	      movePicker.betaCutoff(300 * depth - 250);
 	      return score;
 	    }
 	  }
@@ -700,6 +700,13 @@ namespace DSchack {
 	  if (limit && CurrentTime() >= limit) {
 	    break;
 	  }
+
+	  /* If we know that we have a checkmate, we can break
+	     early here to not waste our time.  Additionally,
+	     when we see that we are being mated, we assume that
+	     our opponent also sees this, so just move immediately.  */
+	  if (prevScore.isCheckmate())
+	    break;
 	}
 
 	/* Search the root node with an open window at all depths.
