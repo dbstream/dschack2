@@ -595,7 +595,7 @@ namespace DSchack {
 	  if (score > alpha) {
 	    alpha = score;
 	    if (score >= beta) {
-	      movePicker.betaCutoff(300 + 250 * depth);
+	      movePicker.betaCutoff(300 * depth + 250);
 	      return std::make_tuple(move, score, LOWERBOUND);
 	    }
 	  }
@@ -716,7 +716,7 @@ namespace DSchack {
 	   window, we re-search with a larger or open window.  */
 	auto [move, score, boundType] = SearchRoot(depth, SCORE_MIN, SCORE_MAX);
 
-	/* If we did not have a chance to fully explote any root
+	/* If we did not have a chance to fully explore any root
 	   moves, stop here.  Even if we did not examine all root
 	   moves, as long as we examined at least one move we can
 	   be sure that we examined the previous PV move, because
