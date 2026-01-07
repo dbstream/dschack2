@@ -6,12 +6,39 @@
 #include <iostream>
 
 #include "Engine.h"
+#include "Search.h"
+#include "Threads.h"
 
 namespace DSchack {
+  struct EngineInternal {
+    EngineThread searcherThread;
+
+    SearchGlobalState searchGlobalState;
+  };
+
+  Engine::~Engine()
+  {
+    stop();
+  }
+
+  Engine::Engine(EngineCallbacks &callbacks)
+    : m_callbacks(callbacks)
+  {
+    m_internal = std::make_unique<EngineInternal>();
+  }
+
   bool Engine::searchInProgress()
   {
-    return false;
+    return m_internal->searchGlobalState.inProgress.load(std::memory_order_acquire);
   }
+
+  bool Engine::ponderInProgress()
+  {
+    return m_internal->searchGlobalState.ponder.load(std::memory_order_acquire);
+  }
+
+  void Engine::newGame()
+  {}
 
   void Engine::setPosition(const Position &pos, const std::vector<Move> &pastMoves)
   {
@@ -25,9 +52,91 @@ namespace DSchack {
     }
   }
 
-  void Engine::go(int depth, int wtime, int btime, int winc, int binc,
-		  int movetime, int movestogo, bool infinite)
+  void Engine::stop()
   {
-    std::cout << "internal error: 'go' is unimplemented\n";
+    m_internal->searchGlobalState.stopRequested.store(true, std::memory_order_release);
+    m_internal->searcherThread.waitForIdle();
+  }
+
+  static std::function<void()> callSearch(Engine *engine, SearchGlobalState *state)
+  {
+    return [engine, state](){
+      Search(engine, state);
+    };
+  }
+
+  void Engine::go(int depth, int wtime, int btime, int winc, int binc,
+		  int movetime, int movestogo, bool infinite, bool ponder)
+  {
+    SearchGlobalState &s = m_internal->searchGlobalState;
+
+    m_internal->searcherThread.waitForIdle();
+    s.goTime = CurrentTime();
+    s.inProgress.store(true, std::memory_order_relaxed);
+    s.stopRequested.store(false, std::memory_order_relaxed);
+    s.ponder.store(ponder, std::memory_order_relaxed);
+    s.infinite = infinite;
+    s.fixed_movetime = false;
+    if (m_position.sideToMove() == WHITE) {
+      s.ctime = wtime;
+      s.cinc = winc;
+    } else {
+      s.ctime = btime;
+      s.cinc = binc;
+    }
+    s.movestogo = movestogo;
+    s.movetime = movetime;
+    s.softTimeLimit = 0;
+    s.hardTimeLimit.store(0, std::memory_order_relaxed);
+    s.depthLimit = depth;
+
+    if (s.movetime)
+      s.fixed_movetime = true;
+
+    /* If no movetime is provided and we have timing information,
+       calculate a "virtual" movetime ourselves.  */
+    if (s.movetime == 0 && s.ctime != 0) {
+      if (s.movestogo > 0)
+	s.movetime = (s.ctime + s.cinc / 2) / s.movestogo;
+      else
+	s.movetime = s.ctime / 20 + s.cinc / 2;
+    }
+
+    if (s.movetime != 0 && !s.ponder) {
+      int hard = s.movetime - 10;
+      if (hard <= 10)
+	hard = s.movetime / 2;
+      int soft = hard / 2;
+      if (s.fixed_movetime) {
+	// If this really was a 'go movetime', use the hard limit directly.
+	soft = hard;
+      }
+      s.softTimeLimit = s.goTime + soft;
+      s.hardTimeLimit.store(s.goTime + hard, std::memory_order_relaxed);
+    }
+
+    m_internal->searcherThread.start(callSearch(this, &s));
+  }
+
+  void Engine::ponderhit()
+  {
+    SearchGlobalState &s = m_internal->searchGlobalState;
+
+    uint64_t ponderhitTime = CurrentTime();
+    int elapsed = ponderhitTime - s.goTime;
+
+    if (s.movetime != 0) {
+      int hard = s.movetime - 10;
+      if (hard <= 10)
+	hard = s.movetime / 2;
+      int soft = (hard - elapsed) / 2;
+      if (s.fixed_movetime)
+	soft = hard;
+
+      s.softTimeLimit = ponderhitTime + soft;
+      s.hardTimeLimit.store(ponderhitTime + hard, std::memory_order_relaxed);
+    }
+
+    m_internal->searchGlobalState.ponder.store(false, std::memory_order_release);
   }
 }

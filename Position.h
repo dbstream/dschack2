@@ -465,6 +465,16 @@ namespace DSchack {
       return false;
     }
 
+    /** inCheck: test if the side to move is in check.  */
+    constexpr bool inCheck(void) const
+    {
+      Color us = sideToMove();
+      Color them = (us == WHITE) ? BLACK : WHITE;
+      int kingSq = Sq(pieces(us, KING));
+
+      return attackedByOcc(pieces(BOTH, ALL), kingSq, them);
+    }
+
     constexpr void makeMove(Move move)
     {
       Color us = sideToMove();

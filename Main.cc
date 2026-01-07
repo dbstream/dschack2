@@ -12,6 +12,7 @@ the UCI protocol, which is used for user<->engine communication.  */
 #include <string.h>
 #include <string>
 #include <vector>
+#include <mutex>
 
 #include "Bitboard.h"
 #include "Engine.h"
@@ -20,6 +21,8 @@ the UCI protocol, which is used for user<->engine communication.  */
 
 namespace DSchack {
   static const std::string_view STARTPOS_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+
+  static std::mutex gCoutMutex;
 
   static constexpr int parseInt(std::string_view s)
   {
@@ -93,20 +96,70 @@ namespace DSchack {
 
   static bool gShouldExit = false;
 
+  class UCIEngineCallbacks : public EngineCallbacks {
+  public:
+    ~UCIEngineCallbacks() {}
+
+    void score(Score score, BoundType boundType,
+	       int depth, uint64_t nodes,
+	       int search_ms, std::span<const Move> pv) override
+    {
+      gCoutMutex.lock();
+      std::cout << "info depth " << depth << " score ";
+      if (score.isCheckmate())
+	std::cout << "mate " << score.depthToMate();
+      else
+	std::cout << "cp " << score.centipawns();
+      if (boundType != EXACT)
+	std::cout << ((boundType == LOWERBOUND) ? " lowerbound" : " upperbound");
+      std::cout << " nodes " << nodes << " time " << search_ms;
+      if (!pv.empty()) {
+	std::cout << " pv";
+	for (Move move : pv)
+	  std::cout << " " << move.toUCI();
+      }
+      std::cout << "\n";
+      gCoutMutex.unlock();
+    }
+
+    void nps(uint64_t count) override
+    {
+      gCoutMutex.lock();
+      std::cout << "info nps " << count << "\n";
+      gCoutMutex.unlock();
+    }
+
+    void bestmove(Move move, std::optional<Move> ponderMove) override
+    {
+      gCoutMutex.lock();
+      std::cout << "bestmove " << move.toUCI();
+      if (ponderMove) {
+	std::cout << " ponder " << ponderMove.value().toUCI();
+      }
+      std::cout << "\n";
+      gCoutMutex.unlock();
+    }
+  };
+
   static void executeUCI(Engine &engine, std::span<std::string_view> parts)
   {
     std::string_view command = parts[0];
     parts = parts.subspan(1);
 
     if (command == "uci") {
+      gCoutMutex.lock();
       std::cout << "id name DSchack\n";
       std::cout << "id author David Bergström\n";
+      std::cout << "option name Ponder type check\n";
       std::cout << "uciok\n";
+      gCoutMutex.unlock();
       return;
     }
 
     if (command == "isready") {
+      gCoutMutex.lock();
       std::cout << "readyok\n";
+      gCoutMutex.unlock();
       return;
     }
 
@@ -115,9 +168,39 @@ namespace DSchack {
       return;
     }
 
+    if (command == "ucinewgame") {
+      if (engine.searchInProgress()) {
+	gCoutMutex.lock();
+	std::cout << "protocol error: a search is in progress\n";
+	gCoutMutex.unlock();
+	return;
+      }
+      engine.newGame();
+      return;
+    }
+
+    if (command == "stop") {
+      // Note: no error to send 'stop' even if not searching.
+      engine.stop();
+      return;
+    }
+
+    if (command == "ponderhit") {
+      if (!engine.ponderInProgress()) {
+	gCoutMutex.lock();
+	std::cout << "protocol error: the engine is not pondering\n";
+	gCoutMutex.unlock();
+	return;
+      }
+      engine.ponderhit();
+      return;
+    }
+
     if (command == "position") {
       if (parts.empty()) {
+	gCoutMutex.lock();
 	std::cout << "protocol error: received 'position' without a FEN or startpos\n";
+	gCoutMutex.unlock();
 	return;
       }
 
@@ -125,12 +208,16 @@ namespace DSchack {
       if (parts[0] == "fen") {
 	parts = parts.subspan(1);
 	if (parts.size() < 6) {
+	  gCoutMutex.lock();
 	  std::cout << "protocol error: incomplete FEN string\n";
+	  gCoutMutex.unlock();
 	  return;
 	}
 	std::optional<Position> optPos = ParseFEN(parts.subspan(0, 6));
 	if (!optPos) {
+	  gCoutMutex.lock();
 	  std::cout << "protocol error: invalid FEN string\n";
+	  gCoutMutex.unlock();
 	  return;
 	}
 	pos = optPos.value();
@@ -139,31 +226,41 @@ namespace DSchack {
 	parts = parts.subspan(1);
 	std::optional<Position> optPos = ParseFEN(startpos_fen);
 	if (!optPos) {
+	  gCoutMutex.lock();
 	  std::cout << "internal error: failed to parse startpos_fen\n";
+	  gCoutMutex.unlock();
 	  return;
 	}
 	pos = optPos.value();
       } else {
+	gCoutMutex.lock();
 	std::cout << "protocol error: '" << parts[0] << "' is not implemented\n";
+	gCoutMutex.unlock();
 	return;
       }
 
       std::vector<Move> moves;
       if (!parts.empty()) {
 	if (parts[0] != "moves") {
+	  gCoutMutex.lock();
 	  std::cout << "protocol error: expected 'moves' but found '" << parts[0] << "'\n";
+	  gCoutMutex.unlock();
 	  return;
 	}
 
 	parts = parts.subspan(1);
 	for (std::string_view s : parts) {
 	  if (s.size() != 4 && s.size() != 5) {
+	    gCoutMutex.lock();
 	    std::cout << "protocol error: invalid move '" << s << "'\n";
+	    gCoutMutex.unlock();
 	    return;
 	  }
 	  if (s[0] < 'a' || s[0] > 'h' || s[1] < '1' || s[1] > '8'
 	   || s[2] < 'a' || s[2] > 'h' || s[3] < '1' || s[3] > '8') {
+	    gCoutMutex.lock();
 	    std::cout << "protocol error: invalid move '" << s << "'\n";
+	    gCoutMutex.unlock();
 	    return;
 	  }
 
@@ -177,14 +274,18 @@ namespace DSchack {
 	    case 'b': case 'B': promote = PROMOTE_BISHOP; break;
 	    case 'r': case 'R': promote = PROMOTE_ROOK; break;
 	    default:
+	      gCoutMutex.lock();
 	      std::cout << "protocol error: invalid move '" << s << "'\n";
+	      gCoutMutex.unlock();
 	      return;
 	    }
 	  }
 
 	  std::optional<Move> optMove = ParseMove(pos, fromSq, toSq, promote);
 	  if (!optMove) {
+	    gCoutMutex.lock();
 	    std::cout << "protocol error: illegal move '" << s << "'\n";
+	    gCoutMutex.unlock();
 	    return;
 	  }
 
@@ -192,14 +293,18 @@ namespace DSchack {
 	  moves.push_back(optMove.value());
 
 	  if (numberOfMoves(pos) == 0) {
+	    gCoutMutex.lock();
 	    std::cout << "protocol error: the game is over after '" << s << "'\n";
+	    gCoutMutex.unlock();
 	    return;
 	  }
 	}
       }
 
       if (engine.searchInProgress()) {
+	gCoutMutex.lock();
 	std::cout << "protocol error: search is already in progress\n";
+	gCoutMutex.unlock();
 	return;
       }
 
@@ -229,6 +334,7 @@ namespace DSchack {
       int movetime = 0;
       int movestogo = 0;
       bool infinite = false;
+      bool ponder = false;
 
       // Note: we ignore any unknown fields in UCI 'go'.
       int field = NONE;
@@ -257,25 +363,35 @@ namespace DSchack {
 	else if (s == "binc") field = BINC;
 	else if (s == "movetime") field = MOVETIME;
 	else if (s == "movestogo") field = MOVESTOGO;
-	else field = NONE;
+	else {
+	  field = NONE;
+	  if (s == "infinite") infinite = true;
+	  else if (s == "ponder") ponder = true;
+	}
       }
 
       if (engine.searchInProgress()) {
+	gCoutMutex.lock();
 	std::cout << "protocol error: search is already in progress\n";
+	gCoutMutex.unlock();
 	return;
       }
 
       if (perft_ >= 0) {
+	gCoutMutex.lock();
 	uint64_t nodeCount = perft<true>(engine.getPosition(), perft_);
 	std::cout << "\n";
 	std::cout << "Total: " << nodeCount << "\n";
+	gCoutMutex.unlock();
       } else
 	engine.go(depth, wtime, btime, winc, binc,
-		  movetime, movestogo, infinite);
+		  movetime, movestogo, infinite, ponder);
       return;
     }
 
+    gCoutMutex.lock();
     std::cout << "protocol error: unimplemented command '" << command << "'\n";
+    gCoutMutex.unlock();
   }
 
   void start()
@@ -288,7 +404,8 @@ namespace DSchack {
     TestBitboards();
     InitZobristTables();
 
-    Engine engine;
+    UCIEngineCallbacks uciCallbacks;
+    Engine engine(uciCallbacks);
 
     engine.setPosition(ParseFEN(startpos_fen).value(), {});
 
