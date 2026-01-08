@@ -17,6 +17,15 @@ Q: What's the engine's playing strength?
 A: Probably very weak compared to Stockfish, but probably stronger
    than most human players.
 
+Q: Hardware requirements?
+
+A: The engine probably works best on 64-bit x86 family processors
+   with fast support for PEXT and PDEP instructions, which the move
+   generator relies heavily upon, but ideally the engine should
+   compile and function (albeit slowly) on most architectures.
+   Otherwise please open an issue, and if you want to, feel free to
+   dive into the code yourself to try to fix it.
+
 Q: Why is the code indented so weirdly?
 
 A: Set your tab width to 8.
