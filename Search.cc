@@ -447,6 +447,10 @@ namespace DSchack {
       if (ply >= MAX_PLY)
 	return Evaluate(pos);
 
+      // Check extension.
+      if (pos.inCheck())
+	depth++;
+
       if (!depth)
 	return Quiesce(pos, ply, repPly, alpha, beta);
 
