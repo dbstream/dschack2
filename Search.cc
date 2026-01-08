@@ -545,6 +545,8 @@ namespace DSchack {
       Move bestMove;
       Score bestScore(CHECKMATE_SCORE);
 
+      Score initialAlpha = alpha;
+
       /* Always search the PV move first, if there is one.  */
 
       Move pvMove;
@@ -638,7 +640,7 @@ namespace DSchack {
 	 when there is a move which raises alpha, for example
 	 if a time limit is reached before we have finished
 	 searching.  */
-      if (bestScore < alpha)
+      if (bestScore <= initialAlpha)
 	return std::make_tuple(bestMove, alpha, UPPERBOUND);
       else if (bestScore < beta && searchedAllMoves)
 	return std::make_tuple(bestMove, bestScore, EXACT);
