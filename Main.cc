@@ -168,6 +168,38 @@ namespace DSchack {
       return;
     }
 
+    if (command == "setoption") {
+      if (parts.size() < 4 || parts[0] != "name" || parts[2] != "value") {
+	gCoutMutex.lock();
+	std::cout << "protocol error: expected 'name' and 'value'\n";
+	gCoutMutex.unlock();
+	return;
+      }
+
+      if (parts.size() > 4) {
+	gCoutMutex.lock();
+	std::cout << "protocol error: unexpected text '" << parts[4] << "'\n";
+	gCoutMutex.unlock();
+      }
+
+      std::string_view name = parts[1];
+      std::string_view value = parts[3];
+
+      if (name == "Ponder") {
+	if (value != "true" && value != "false") {
+	  gCoutMutex.lock();
+	  std::cout << "protocol error: expected 'true' or 'false' but got '" << value << "'\n";
+	  gCoutMutex.unlock();
+	}
+	return;
+      }
+
+      gCoutMutex.lock();
+      std::cout << "protocol error: unsupported option '" << name << "'\n";
+      gCoutMutex.unlock();
+      return;
+    }
+
     if (command == "ucinewgame") {
       if (engine.searchInProgress()) {
 	gCoutMutex.lock();
