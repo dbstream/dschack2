@@ -98,6 +98,17 @@ namespace DSchack {
       return Score(-m_value);
     }
 
+    constexpr Score boundedAdd(int count) const
+    {
+      int x = m_value + count;
+      if (x > 32767)
+	x = 32767;
+      else if (x < -32767)
+	x = -32767;
+
+      return Score(x);
+    }
+
     constexpr Score asTTScore() const
     {
       if (isWinningCheckmate())

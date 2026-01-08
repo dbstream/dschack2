@@ -132,6 +132,18 @@ namespace DSchack {
       return m_pGlobal->stopRequested.load(std::memory_order_relaxed);
     }
 
+    bool shouldSoftStop()
+    {
+      if (!pondering() && !m_pGlobal->infinite) {
+	uint64_t limit = m_pGlobal->softTimeLimit;
+	if (limit && CurrentTime() >= limit) {
+	  return true;
+	}
+      }
+
+      return false;
+    }
+
     /** detectRepetition: detect repetition of a position.
     @ply0: the ply after the last rule50-breaking move was made.
     @ply: the current ply.  */
@@ -608,12 +620,8 @@ namespace DSchack {
 	/* Now is a good time to check for soft-stop. We have
 	   searched at least one move so we have a LOWERBOUND
 	   that we can fall back on.  */
-	if (!pondering() && !m_pGlobal->infinite) {
-	  uint64_t limit = m_pGlobal->softTimeLimit;
-	  if (limit && CurrentTime() >= limit) {
-	    break;
-	  }
-	}
+	if (shouldSoftStop())
+	  break;
       }
 
       /* If we fail low, return UPPERBOUND. If we fail high,
@@ -713,12 +721,50 @@ namespace DSchack {
 	    break;
 	}
 
-	/* Search the root node with an open window at all depths.
-	   In the future, we will use the score from the previous
-	   iteration plus/minus a fixed window that we call the
-	   "aspiration window". When a score falls outside of this
-	   window, we re-search with a larger or open window.  */
-	auto [move, score, boundType] = SearchRoot(depth, SCORE_MIN, SCORE_MAX);
+	/* Aspiration windows: use the search result from the previous
+	   iteration of iterative deepening as a decent guess for the
+	   score in this iteration. Set alpha and beta bounds based on
+	   a fixed window around prevScore. If the search fails low or
+	   high, increase the bound that failed but keep the other
+	   bound as it is.  */
+	static constexpr int maxWindowIndex = 2;
+	static constexpr int gradualWidening[maxWindowIndex + 1] = { 25, 100, 65535 };
+
+	int leftWindowIndex = 0;
+	int rightWindowIndex = 0;
+	Score alpha = prevScore.boundedAdd(-gradualWidening[leftWindowIndex]);
+	Score beta = prevScore.boundedAdd(gradualWidening[rightWindowIndex]);
+
+	auto [move, score, boundType] = SearchRoot(depth, alpha, beta);
+	while ((leftWindowIndex < maxWindowIndex && score <= alpha) || (rightWindowIndex < maxWindowIndex && beta <= score)) {
+	  if (shouldSoftStop() || shouldHardStop() || !m_numRootMovesExamined)
+	    break;
+
+	  /* If the search failed low, the move returned can be bogus,
+	     so don't update the PV in that case.  */
+
+	  if (score <= alpha && leftWindowIndex < maxWindowIndex) {
+
+	    alpha = prevScore.boundedAdd(-gradualWidening[++leftWindowIndex]);
+	    m_pEngine->getCallbacks().score(score, boundType, depth, m_numNodes,
+					    CurrentTime() - m_pGlobal->goTime,
+					    std::span(m_previousPv, m_previousPv));
+
+	  } else {
+	    beta = prevScore.boundedAdd(gradualWidening[++rightWindowIndex]);
+
+	    // Note: don't update prevScore as we use it for window centre.
+	    prevBestMove = move;
+	    m_previousPvLength = m_pvLength[0];
+	    for (int i = 0; i < m_previousPvLength; i++)
+	      m_previousPv[i] = m_pvTable[0][i];
+	    m_pEngine->getCallbacks().score(score, boundType, depth, m_numNodes,
+					    CurrentTime() - m_pGlobal->goTime,
+					    std::span(m_previousPv, m_previousPv + m_previousPvLength));
+	  }
+
+	  std::tie(move, score, boundType) = SearchRoot(depth, alpha, beta);
+	}
 
 	/* If we did not have a chance to fully explore any root
 	   moves, stop here.  Even if we did not examine all root
