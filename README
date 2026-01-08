@@ -1,4 +1,52 @@
 DSchack 2.0: now with cool new move generator!
 
 DSchack is the chess engine held together by duct tape, hopes and prayers,
-and many long nights at the so called Hackkvällar at university.
+and many long nights at the so called "Hackkvällar" at my local university.
+
+Questions
+=========
+
+Q: What is this?
+
+A: This is a chess engine that I am developing as a hobby project. It
+   implements the UCI protocol so you can play against it in any GUI
+   which supports that.
+
+Q: What's the engine's playing strength?
+
+A: Probably very weak compared to Stockfish, but probably stronger
+   than most human players.
+
+Q: Why is the code indented so weirdly?
+
+A: Set your tab width to 8.
+   (GNU Emacs' default formatting is weird and I don't care enough
+    to bother figuring out how to configure it to something else.)
+
+Q: What does DSchack mean?
+
+A: "Schack" is Swedish for "Chess" and the letter 'D' in there can
+   mean a lot of different things depending on my mood a particular
+   day. If I'm feeling egoistic, it can be the initial letter of my
+   first name. Occasionally it stands for "dumb".
+
+Roadmap
+=======
+
+This is a list of concepts and ideas that I want to implement or
+experiment with in the future. This is only an approximate list of
+my plans for this engine, as those plans change very frequently.
+
+- Killer heuristic.
+
+- Transposition table.
+  Maybe replace the PV-table-backed functionality entirely and
+  probe the PV directly from the TT instead.
+
+- Neural networks for evaluation.
+  I want to experiment with my own ideas for how to train a neural
+  network to evaluate chess positions, taking some inspiration from
+  ideas found in algorithms such as Deep Q-learning (DQN) and
+  Proximal Policy Optimization (PPO). This will probably differ
+  considerably from how NNUE-like evaluators are typically trained,
+  maybe for the better or maybe for the worse.
