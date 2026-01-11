@@ -16,6 +16,8 @@
 namespace DSchack {
   static constexpr int MAX_HISTORY = 10000;
 
+  static constexpr int ONEPLY = 16;
+
   static constexpr void updateHistory(int &location, int bonus)
   {
     if (bonus < -MAX_HISTORY)
@@ -138,10 +140,12 @@ namespace DSchack {
       return *(m_current++);
     }
 
-    void betaCutoff(int historyBonus)
+    void betaCutoff(int depth)
     {
-      if (m_phase != 2)
+      if (m_phase != 2 || depth < ONEPLY)
 	return;
+
+      int historyBonus = (300 * depth) / ONEPLY - 250;
 
       Move *pMove = m_current - 1;
       updateHistory(m_historyArray[pMove->fromSquare()][pMove->toSquare()],
@@ -501,7 +505,7 @@ namespace DSchack {
       if (pos.inCheck())
 	depth++;
 
-      if (!depth)
+      if (depth <= 0)
 	return Quiesce(pos, ply, repPly, alpha, beta);
 
       if (!incrementNodes())
@@ -521,7 +525,7 @@ namespace DSchack {
 	m_movelist[m_moveOffset + ply] = pvMove;
 
 	int nextRepPly = pvMove.resetsRule50() ? ply + 1 : repPly;
-	Score score = SearchNode<true>(nextPos, ply + 1, depth - 1,
+	Score score = SearchNode<true>(nextPos, ply + 1, depth - ONEPLY,
 				       nextRepPly, -beta, -alpha).negated();
 
 	if (shouldHardStop())
@@ -555,7 +559,7 @@ namespace DSchack {
 	m_movelist[m_moveOffset + ply] = move;
 
 	int nextRepPly = move.resetsRule50() ? ply + 1 : repPly;
-	Score score = SearchNode<false>(nextPos, ply + 1, depth - 1,
+	Score score = SearchNode<false>(nextPos, ply + 1, depth - ONEPLY,
 					nextRepPly, -beta, -alpha).negated();
 
 	if (score > bestScore) {
@@ -568,7 +572,7 @@ namespace DSchack {
 	  if (score > alpha) {
 	    alpha = score;
 	    if (score >= beta) {
-	      movePicker.betaCutoff(300 * depth - 250);
+	      movePicker.betaCutoff(depth);
 	      return score;
 	    }
 	  }
@@ -608,7 +612,7 @@ namespace DSchack {
 	m_movelist[m_moveOffset] = pvMove;
 
 	int repPly = pvMove.resetsRule50() ? 1 : -m_moveOffset;
-	Score score = SearchNode<true>(nextPos, 1, depth - 1,
+	Score score = SearchNode<true>(nextPos, 1, depth - ONEPLY,
 				       repPly, -beta, -alpha).negated();
 
 	if (!shouldHardStop())
@@ -650,7 +654,7 @@ namespace DSchack {
 	m_movelist[m_moveOffset] = move;
 
 	int repPly = move.resetsRule50() ? 1 : -m_moveOffset;
-	Score score = SearchNode<false>(nextPos, 1, depth - 1,
+	Score score = SearchNode<false>(nextPos, 1, depth - ONEPLY,
 					repPly, -beta, -alpha).negated();
 
 	if (shouldHardStop())
@@ -667,7 +671,7 @@ namespace DSchack {
 	  if (score > alpha) {
 	    alpha = score;
 	    if (score >= beta) {
-	      movePicker.betaCutoff(300 * depth + 250);
+	      movePicker.betaCutoff(depth);
 	      return std::make_tuple(move, score, LOWERBOUND);
 	    }
 	  }
@@ -730,7 +734,7 @@ namespace DSchack {
       /* Run a first iteration of iterative deepening with an open window
 	 to get an initial approximation of score.  */
       {
-	auto [move, score, boundType] = SearchRoot(1, SCORE_MIN, SCORE_MAX);
+	auto [move, score, boundType] = SearchRoot(ONEPLY, SCORE_MIN, SCORE_MAX);
 
 	/* If we are stopped here, we have nothing to go on, so we
 	   return the move we arbitrarily picked above  (the other
@@ -753,7 +757,7 @@ namespace DSchack {
 
       /* Iterative deepening loop. We begin at depth 2, because we
          already searched depth 1 earlier. */
-      for (int depth = 2;; depth++) {
+      for (int depth = 2 * ONEPLY;; depth += ONEPLY) {
 
 	if (shouldHardStop())
 	  break;
@@ -762,7 +766,7 @@ namespace DSchack {
 	   to check for soft time constraints.  */
 
 	if (!pondering() && !m_pGlobal->infinite) {
-	  if (m_pGlobal->depthLimit && depth > m_pGlobal->depthLimit)
+	  if (m_pGlobal->depthLimit && (depth / ONEPLY) > m_pGlobal->depthLimit)
 	    break;
 	  uint64_t limit = m_pGlobal->softTimeLimit;
 	  if (limit && CurrentTime() >= limit) {
@@ -802,7 +806,7 @@ namespace DSchack {
 	  if (score <= alpha && leftWindowIndex < maxWindowIndex) {
 
 	    alpha = prevScore.boundedAdd(-gradualWidening[++leftWindowIndex]);
-	    m_pEngine->getCallbacks().score(score, boundType, depth, m_numNodes,
+	    m_pEngine->getCallbacks().score(score, boundType, depth / ONEPLY, m_numNodes,
 					    CurrentTime() - m_pGlobal->goTime,
 					    std::span(m_previousPv, m_previousPv));
 
@@ -814,7 +818,7 @@ namespace DSchack {
 	    m_previousPvLength = m_pvLength[0];
 	    for (int i = 0; i < m_previousPvLength; i++)
 	      m_previousPv[i] = m_pvTable[0][i];
-	    m_pEngine->getCallbacks().score(score, boundType, depth, m_numNodes,
+	    m_pEngine->getCallbacks().score(score, boundType, depth / ONEPLY, m_numNodes,
 					    CurrentTime() - m_pGlobal->goTime,
 					    std::span(m_previousPv, m_previousPv + m_previousPvLength));
 	  }
@@ -838,7 +842,7 @@ namespace DSchack {
 	m_previousPvLength = m_pvLength[0];
 	for (int i = 0; i < m_previousPvLength; i++)
 	  m_previousPv[i] = m_pvTable[0][i];
-	m_pEngine->getCallbacks().score(score, boundType, depth, m_numNodes,
+	m_pEngine->getCallbacks().score(score, boundType, depth / ONEPLY, m_numNodes,
 					CurrentTime() - m_pGlobal->goTime,
 					std::span(m_previousPv, m_previousPv + m_previousPvLength));
       }
