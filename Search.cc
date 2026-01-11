@@ -503,7 +503,7 @@ namespace DSchack {
 
       // Check extension.
       if (pos.inCheck())
-	depth++;
+	depth += ONEPLY;
 
       if (depth <= 0)
 	return Quiesce(pos, ply, repPly, alpha, beta);
