@@ -19,4 +19,5 @@ target_sources(DSchack PRIVATE
   "Position.cc"
   "Search.cc"
   "Threads.cc"
+  "Transposition.cc"
 )

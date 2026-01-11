@@ -44,11 +44,12 @@ namespace DSchack {
 
     /** nps: send information about current nodes/s being searched.
     @count: nodes per second.
+    @hashfull: transposition table usage (percentage).
 
     This function should send a line like the following if the
     protocol is UCI:
-      info nps 11234  */
-    virtual void nps(uint64_t count) = 0;
+      info nps 11234 hashfull 22  */
+    virtual void nps(uint64_t count, int hashfull) = 0;
 
     /** bestmove: send information about what the engine deems to
 	be the best move.
@@ -118,6 +119,10 @@ namespace DSchack {
 
     May not be called if there is a search in progress.  */
     void newGame();
+
+    /** setHashSize: set the hash table size.
+    @megabytes: hash table size in megabytes.  */
+    void setHashSize(int megabytes);
 
     /** setPosition: update the engine position.
     @pos: current position.

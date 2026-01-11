@@ -8,11 +8,12 @@
 #include "Engine.h"
 #include "Search.h"
 #include "Threads.h"
+#include "Transposition.h"
 
 namespace DSchack {
   struct EngineInternal {
     EngineThread searcherThread;
-
+    TranspositionTable transpositionTable;
     SearchGlobalState searchGlobalState;
   };
 
@@ -38,7 +39,14 @@ namespace DSchack {
   }
 
   void Engine::newGame()
-  {}
+  {
+    m_internal->transpositionTable.clear();
+  }
+
+  void Engine::setHashSize(int megabytes)
+  {
+    m_internal->transpositionTable.resize(megabytes);
+  }
 
   void Engine::setPosition(const Position &pos, const std::vector<Move> &pastMoves)
   {
@@ -58,10 +66,11 @@ namespace DSchack {
     m_internal->searcherThread.waitForIdle();
   }
 
-  static std::function<void()> callSearch(Engine *engine, SearchGlobalState *state)
+  static std::function<void()> callSearch(Engine *engine, SearchGlobalState *state,
+					  TranspositionTable *tt)
   {
-    return [engine, state](){
-      Search(engine, state);
+    return [engine, state, tt](){
+      Search(engine, state, tt);
     };
   }
 
@@ -115,7 +124,8 @@ namespace DSchack {
       s.hardTimeLimit.store(s.goTime + hard, std::memory_order_relaxed);
     }
 
-    m_internal->searcherThread.start(callSearch(this, &s));
+    m_internal->searcherThread.start(callSearch(this, &s,
+						&m_internal->transpositionTable));
   }
 
   void Engine::ponderhit()

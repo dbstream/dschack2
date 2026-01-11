@@ -122,10 +122,10 @@ namespace DSchack {
       gCoutMutex.unlock();
     }
 
-    void nps(uint64_t count) override
+    void nps(uint64_t count, int hashfull) override
     {
       gCoutMutex.lock();
-      std::cout << "info nps " << count << "\n";
+      std::cout << "info nps " << count << " hashfull " << hashfull << "\n";
       gCoutMutex.unlock();
     }
 

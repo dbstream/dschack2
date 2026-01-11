@@ -11,6 +11,8 @@
 #include "Engine.h"
 
 namespace DSchack {
+  class TranspositionTable;
+
   /** CurrentTime: get the time in milliseconds since some epoch.  */
   static uint64_t CurrentTime()
   {
@@ -70,5 +72,6 @@ namespace DSchack {
     int depthLimit;
   };
 
-  void Search(Engine *engine, SearchGlobalState *state);
+  void Search(Engine *engine, SearchGlobalState *state,
+	      TranspositionTable *tt);
 } // namespace DSchack

@@ -12,6 +12,7 @@
 #include "Engine.h"
 #include "MoveGen.h"
 #include "Search.h"
+#include "Transposition.h"
 
 namespace DSchack {
   static constexpr int MAX_HISTORY = 10000;
@@ -164,6 +165,7 @@ namespace DSchack {
   class Searcher {
     Engine *m_pEngine;
     SearchGlobalState *m_pGlobal;
+    TranspositionTable *m_tt;
     uint64_t m_numNodes = 0;
     uint64_t m_numNodesPerS = 0;
     uint64_t m_lastPeriodicInfo;
@@ -256,7 +258,8 @@ namespace DSchack {
       // Try to print nps once per second.
       int elapsed = t - m_lastPeriodicInfo;
       if (elapsed >= 1000) {
-	m_pEngine->getCallbacks().nps(1000 * m_numNodesPerS / elapsed);
+	m_pEngine->getCallbacks().nps(1000 * m_numNodesPerS / elapsed,
+				      m_tt->hashfull());
 	m_numNodesPerS = 0;
 	m_lastPeriodicInfo = t;
       }
@@ -703,10 +706,12 @@ namespace DSchack {
     }
 
   public:
-    Searcher(Engine *engine, SearchGlobalState *global)
+    Searcher(Engine *engine, SearchGlobalState *global,
+	     TranspositionTable *tt)
     {
       m_pEngine = engine;
       m_pGlobal = global;
+      m_tt = tt;
       m_lastPeriodicInfo = global->goTime;
 
       const std::vector<Move> repMoves = engine->getRepetitionMoves();
@@ -858,9 +863,10 @@ namespace DSchack {
     }
   };
 
-  void Search(Engine *engine, SearchGlobalState *state)
+  void Search(Engine *engine, SearchGlobalState *state,
+	      TranspositionTable *tt)
   {
-    std::unique_ptr<Searcher> searcher = std::make_unique<Searcher>(engine, state);
+    std::unique_ptr<Searcher> searcher = std::make_unique<Searcher>(engine, state, tt);
     searcher->Search();
   }
 } // namespace DSchack
