@@ -736,6 +736,8 @@ namespace DSchack {
 	  rep_ply = 1;
 
 	while (numPvMoves < MAX_PLY) {
+	  if (pos.rule50() >= 100)
+	    break;
 	  if (detectRepetition(rep_ply, numPvMoves))
 	    break;
 	  std::optional<TTEntry> ttEntry = m_tt->probe(pos);
