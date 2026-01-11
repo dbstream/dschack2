@@ -385,9 +385,9 @@ namespace DSchack {
       Bitboard occ = pieces(BOTH, ALL);
       Bitboard res = 0;
 
-      if (color == WHITE)
+      if (color == WHITE || color == BOTH)
 	res |= pieces(color, PAWN) & PawnAttackersU(sq);
-      else
+      if (color == BLACK || color == BOTH)
 	res |= pieces(color, PAWN) & PawnAttackersD(sq);
 
       res |= pieces(color, KNIGHT) & KnightAttacks(sq);
