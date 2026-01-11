@@ -26,6 +26,8 @@ namespace DSchack {
 
   static constexpr int parseInt(std::string_view s)
   {
+    if (s == "")
+      return -1;
     int value = 0;
     for (char c : s) {
       if (c < '0' || c > '9')
@@ -151,6 +153,8 @@ namespace DSchack {
       std::cout << "id name DSchack\n";
       std::cout << "id author David Bergström\n";
       std::cout << "option name Ponder type check\n";
+      std::cout << "option name Hash type spin default 16 min 1 max 1024\n";
+      std::cout << "option name Clear Hash type button\n";
       std::cout << "uciok\n";
       gCoutMutex.unlock();
       return;
@@ -169,21 +173,72 @@ namespace DSchack {
     }
 
     if (command == "setoption") {
-      if (parts.size() < 4 || parts[0] != "name" || parts[2] != "value") {
+      if (engine.searchInProgress()) {
 	gCoutMutex.lock();
-	std::cout << "protocol error: expected 'name' and 'value'\n";
+	std::cout << "protocol error: cannot setoption with an in-progress search\n";
 	gCoutMutex.unlock();
 	return;
       }
 
-      if (parts.size() > 4) {
+      if (parts.size() < 2) {
 	gCoutMutex.lock();
-	std::cout << "protocol error: unexpected text '" << parts[4] << "'\n";
+	std::cout << "protocol error: expected an option name\n";
 	gCoutMutex.unlock();
+	return;
       }
 
-      std::string_view name = parts[1];
-      std::string_view value = parts[3];
+      if (parts[0] != "name") {
+	gCoutMutex.lock();
+	std::cout << "protocol error: expected 'name'\n";
+	gCoutMutex.unlock();
+	return;
+      }
+
+      std::string name(parts[1]);
+      parts = parts.subspan(2);
+
+      for (;;) {
+	if (parts.size() == 0)
+	  break;
+	if (parts[0] == "value") {
+	  parts = parts.subspan(1);
+	  break;
+	}
+	name = name + " " + parts[0];
+	parts = parts.subspan(1);
+      }
+
+      std::string value("");
+      if (parts.size() > 0) {
+	value = parts[0];
+	parts = parts.subspan(1);
+	while (parts.size() > 0) {
+	  value = value + " " + parts[0];
+	  parts = parts.subspan(1);
+	}
+      }
+
+      if (name == "Hash") {
+	int megabytes = parseInt(value);
+	if (megabytes < 0) {
+	  std::cout << "protocol error: unsupported value for hash table size: '" << value << "'\n";
+	  return;
+	}
+
+	if (megabytes < 1 || megabytes > 1024) {
+	  std::cout << "protocol error: value out of range for Hash: '" << value
+		    << "' (allowed range is 1-1024)\n";
+	  return;
+	}
+
+	engine.setHashSize(megabytes);
+	return;
+      }
+
+      if (name == "Clear Hash") {
+	engine.newGame(); // poor man's hashtable clearing
+	return;
+      }
 
       if (name == "Ponder") {
 	if (value != "true" && value != "false") {
@@ -195,7 +250,8 @@ namespace DSchack {
       }
 
       gCoutMutex.lock();
-      std::cout << "protocol error: unsupported option '" << name << "'\n";
+      std::cout << "protocol error: unsupported option '" << name
+		<< "' with value '" << value << "'\n";
       gCoutMutex.unlock();
       return;
     }
