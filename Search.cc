@@ -170,12 +170,8 @@ namespace DSchack {
     uint64_t m_numNodesPerS = 0;
     uint64_t m_lastPeriodicInfo;
     int m_numRootMovesExamined;
-    int m_previousPvLength = 0;
     int m_moveOffset;
     Move m_movelist[MAX_PLY + 100]; // +100 to leave space for past moves (capped by rule50).
-    Move m_previousPv[MAX_PLY + 1];
-    Move m_pvTable[MAX_PLY + 1][MAX_PLY + 1];
-    int m_pvLength[MAX_PLY + 1];
     int m_historyArray[2][64][64];
 
     bool pondering()
@@ -443,13 +439,17 @@ namespace DSchack {
     Score Quiesce(const Position &pos, int ply,
 		  int repPly, Score alpha, Score beta)
     {
-      m_pvLength[ply] = ply;
-
       if (ply >= MAX_PLY)
 	return Evaluate(pos);
 
       if (!incrementNodes())
 	return alpha;
+
+      std::optional<TTEntry> ttEntry = m_tt->probe(pos);
+      if (ttEntry) {
+	if (ttEntry->boundType != UPPERBOUND && ttEntry->score >= beta)
+	  return ttEntry->score;
+      }
 
       Score standing_eval = Evaluate(pos);
       if (standing_eval >= alpha) {
@@ -471,15 +471,13 @@ namespace DSchack {
 	Score score = Quiesce(nextPos, ply + 1,
 			      ply + 1, -beta, -alpha).negated();
 	if (score > bestScore) {
-	  m_pvLength[ply] = m_pvLength[ply + 1];
-	  m_pvTable[ply][ply] = move;
-	  for (int i = ply + 1; i < m_pvLength[ply]; i++)
-	    m_pvTable[ply][i] = m_pvTable[ply + 1][i];
 	  bestScore = score;
 	  if (score > alpha) {
 	    alpha = score;
-	    if (score >= beta)
+	    if (score >= beta) {
+	      m_tt->insert(pos, move, beta, LOWERBOUND, 0);
 	      return score;
+	    }
 	  }
 	}
       }
@@ -491,8 +489,6 @@ namespace DSchack {
     Score SearchNode(const Position &pos, int ply, int depth,
 		     int repPly, Score alpha, Score beta)
     {
-      m_pvLength[ply] = ply;
-
       // Detect draw by 50-moves rule.
       if (pos.rule50() >= 100)
 	return Score(0);
@@ -514,36 +510,46 @@ namespace DSchack {
       if (!incrementNodes())
 	return alpha;
 
+      Score initialAlpha(alpha);
+
       Move bestMove;
       Score bestScore(CHECKMATE_SCORE);
 
-      /* Always search the PV move first, if there is one. */
+      /* Always search the TT move first, if there is one. */
 
-      Move pvMove;
-      if (IsPV && m_previousPvLength > ply) {
-	pvMove = m_previousPv[ply];
+      Move ttMove;
+      std::optional<TTEntry> ttEntry = m_tt->probe(pos);
+      if (ttEntry) {
+	ttMove = ttEntry->move;
+
+	/* Allow transposition table cutoffs if the TT entry was
+	   searched with at least our depth and we are not the
+	   principal variation.  */
+
+	if (!IsPV && ttEntry->depth >= depth) {
+	  if (ttEntry->boundType != UPPERBOUND && ttEntry->score >= beta)
+	    return ttEntry->score;
+	}
 
 	Position nextPos = pos;
-	nextPos.makeMove(pvMove);
-	m_movelist[m_moveOffset + ply] = pvMove;
+	nextPos.makeMove(ttMove);
+	m_movelist[m_moveOffset + ply] = ttMove;
 
-	int nextRepPly = pvMove.resetsRule50() ? ply + 1 : repPly;
-	Score score = SearchNode<true>(nextPos, ply + 1, depth - ONEPLY,
+	int nextRepPly = ttMove.resetsRule50() ? ply + 1 : repPly;
+	Score score = SearchNode<IsPV>(nextPos, ply + 1, depth - ONEPLY,
 				       nextRepPly, -beta, -alpha).negated();
 
 	if (shouldHardStop())
 	  return score;
 
-	m_pvLength[ply] = m_pvLength[ply + 1];
-	m_pvTable[ply][ply] = pvMove;
-	for (int i = ply + 1; i < m_pvLength[ply]; i++)
-	  m_pvTable[ply][i] = m_pvTable[ply + 1][i];
-	bestMove = pvMove;
+	bestMove = ttMove;
 	bestScore = score;
 	if (score > alpha) {
 	  alpha = score;
-	  if (score >= beta)
+	  if (score >= beta) {
+	    m_tt->insert(pos, ttMove, beta, LOWERBOUND, depth);
 	    return score;
+	  }
 	}
       }
 
@@ -553,8 +559,9 @@ namespace DSchack {
       while (std::optional<Move> optMove = movePicker.nextMove()) {
 	Move move = optMove.value();
 
-	/* Skip the PV move if there is one. */
-	if (IsPV && move.sameAs(pvMove))
+	/* Skip the TT move, as we already searched that one before.  */
+
+	if (move.sameAs(ttMove))
 	  continue;
 
 	Position nextPos = pos;
@@ -565,72 +572,64 @@ namespace DSchack {
 	Score score = SearchNode<false>(nextPos, ply + 1, depth - ONEPLY,
 					nextRepPly, -beta, -alpha).negated();
 
+	if (shouldHardStop())
+	  return score;
+
 	if (score > bestScore) {
-	  m_pvLength[ply] = m_pvLength[ply + 1];
-	  m_pvTable[ply][ply] = move;
-	  for (int i = ply + 1; i < m_pvLength[ply]; i++)
-	    m_pvTable[ply][i] = m_pvTable[ply + 1][i];
 	  bestMove = move;
 	  bestScore = score;
 	  if (score > alpha) {
 	    alpha = score;
 	    if (score >= beta) {
 	      movePicker.betaCutoff(depth);
+	      m_tt->insert(pos, move, beta, LOWERBOUND, depth);
 	      return score;
 	    }
 	  }
 	}
-
-	if (shouldHardStop())
-	  return bestScore;
       }
 
       if (bestScore == CHECKMATE_SCORE && !pos.inCheck())
-	return Score(0);
+	bestScore = Score(0);
 
+      if (bestScore <= initialAlpha)
+	m_tt->insert(pos, bestMove, alpha, UPPERBOUND, depth);
+      else
+	m_tt->insert(pos, bestMove, bestScore, EXACT, depth);
       return bestScore;
     }
 
-    std::tuple<Move, Score, BoundType> SearchRoot(int depth,
+    std::tuple<Move, Score, BoundType> SearchRoot(int depth, Move prevBestMove,
 						  Score alpha, Score beta)
     {
       m_numNodes = 0;
       m_numRootMovesExamined = 0;
-
-      m_pvLength[0] = 0;
 
       Move bestMove;
       Score bestScore(CHECKMATE_SCORE);
 
       Score initialAlpha = alpha;
 
-      /* Always search the PV move first, if there is one.  */
+      /* Always search prevBestMove first.  */
 
-      Move pvMove;
-      if (m_previousPvLength > 0) {
-	pvMove = m_previousPv[0];
-
+      {
 	Position nextPos = m_pEngine->getPosition();
-	nextPos.makeMove(pvMove);
-	m_movelist[m_moveOffset] = pvMove;
+	nextPos.makeMove(prevBestMove);
+	m_movelist[m_moveOffset] = prevBestMove;
 
-	int repPly = pvMove.resetsRule50() ? 1 : -m_moveOffset;
+	int repPly = prevBestMove.resetsRule50() ? 1 : -m_moveOffset;
 	Score score = SearchNode<true>(nextPos, 1, depth - ONEPLY,
 				       repPly, -beta, -alpha).negated();
 
 	if (!shouldHardStop())
 	  m_numRootMovesExamined++;
 
-	m_pvLength[0] = m_pvLength[1];
-	m_pvTable[0][0] = pvMove;
-	for (int i = 1; i < m_pvLength[0]; i++)
-	  m_pvTable[0][i] = m_pvTable[1][i];
-	bestMove = pvMove;
+	bestMove = prevBestMove;
 	bestScore = score;
 	if (score > alpha) {
 	  alpha = score;
 	  if (score >= beta)
-	    return std::make_tuple(pvMove, score, LOWERBOUND);
+	    return std::make_tuple(prevBestMove, score, LOWERBOUND);
 	}
       }
 
@@ -647,9 +646,9 @@ namespace DSchack {
 
 	Move move = optMove.value();
 
-	/* Search all moves in this position besides the PV
+	/* Search all moves in this position besides the TT
 	   move, since we already searched that one earlier.  */
-	if (move.sameAs(pvMove))
+	if (move.sameAs(prevBestMove))
 	  continue;
 
 	Position nextPos = m_pEngine->getPosition();
@@ -667,10 +666,6 @@ namespace DSchack {
 	if (score > bestScore) {
 	  bestMove = move;
 	  bestScore = score;
-	  m_pvLength[0] = m_pvLength[1];
-	  m_pvTable[0][0] = move;
-	  for (int i = 1; i < m_pvLength[0]; i++)
-	    m_pvTable[0][i] = m_pvTable[1][i];
 	  if (score > alpha) {
 	    alpha = score;
 	    if (score >= beta) {
@@ -726,6 +721,51 @@ namespace DSchack {
       }
     }
 
+    void sendScoreAndPV(Score score, BoundType boundType, int depth,
+			uint64_t numNodes, int elapsedMs,
+			std::optional<Move> bestMove)
+    {
+      int numPvMoves = 0;
+      if (bestMove) {
+	numPvMoves = 1;
+	m_movelist[m_moveOffset] = bestMove.value();
+	Position pos = m_pEngine->getPosition();
+	pos.makeMove(bestMove.value());
+	int rep_ply = -m_moveOffset;
+	if (bestMove.value().resetsRule50())
+	  rep_ply = 1;
+
+	while (numPvMoves < MAX_PLY) {
+	  if (detectRepetition(rep_ply, numPvMoves))
+	    break;
+	  std::optional<TTEntry> ttEntry = m_tt->probe(pos);
+	  if (!ttEntry)
+	    break;
+	  m_movelist[m_moveOffset + numPvMoves++] = ttEntry->move;
+	  pos.makeMove(ttEntry->move);
+	  if (ttEntry->move.resetsRule50())
+	    rep_ply = numPvMoves;
+	}
+      }
+
+      std::span<Move> pv = std::span<Move>(m_movelist + m_moveOffset,
+					   m_movelist + m_moveOffset + numPvMoves);
+      m_pEngine->getCallbacks().score(score, boundType, depth,
+				      numNodes, elapsedMs, pv);
+    }
+
+    std::optional<Move> getPonderMove(Move prevBestMove)
+    {
+      Position pos = m_pEngine->getPosition();
+      pos.makeMove(prevBestMove);
+
+      std::optional<TTEntry> ttEntry = m_tt->probe(pos);
+      if (ttEntry)
+	return ttEntry->move;
+      else
+	return std::nullopt;
+    }
+
     void Search()
     {
       /* We always need some move and score to return in case we are
@@ -734,12 +774,11 @@ namespace DSchack {
       Move prevBestMove = MovePicker(m_pEngine->getPosition(), m_historyArray[0]).nextMove().value();
       Score prevScore(-20000);
 
-      m_previousPvLength = 0;
-
       /* Run a first iteration of iterative deepening with an open window
 	 to get an initial approximation of score.  */
       {
-	auto [move, score, boundType] = SearchRoot(ONEPLY, SCORE_MIN, SCORE_MAX);
+	auto [move, score, boundType] = SearchRoot(ONEPLY, prevBestMove,
+						   SCORE_MIN, SCORE_MAX);
 
 	/* If we are stopped here, we have nothing to go on, so we
 	   return the move we arbitrarily picked above  (the other
@@ -752,12 +791,9 @@ namespace DSchack {
 
 	prevBestMove = move;
 	prevScore = score;
-	m_previousPvLength = m_pvLength[0];
-	for (int i = 0; i < m_previousPvLength; i++)
-	  m_previousPv[i] = m_pvTable[0][i];
-	m_pEngine->getCallbacks().score(score, boundType, 1, m_numNodes,
-					CurrentTime() - m_pGlobal->goTime,
-					std::span(m_previousPv, m_previousPv + m_previousPvLength));
+	sendScoreAndPV(score, boundType, 1, m_numNodes,
+		       CurrentTime() - m_pGlobal->goTime,
+		       std::nullopt);
       }
 
       /* Iterative deepening loop. We begin at depth 2, because we
@@ -800,7 +836,7 @@ namespace DSchack {
 	Score alpha = prevScore.boundedAdd(-gradualWidening[leftWindowIndex]);
 	Score beta = prevScore.boundedAdd(gradualWidening[rightWindowIndex]);
 
-	auto [move, score, boundType] = SearchRoot(depth, alpha, beta);
+	auto [move, score, boundType] = SearchRoot(depth, prevBestMove, alpha, beta);
 	while ((leftWindowIndex < maxWindowIndex && score <= alpha) || (rightWindowIndex < maxWindowIndex && beta <= score)) {
 	  if (shouldSoftStop() || shouldHardStop() || !m_numRootMovesExamined)
 	    break;
@@ -811,24 +847,19 @@ namespace DSchack {
 	  if (score <= alpha && leftWindowIndex < maxWindowIndex) {
 
 	    alpha = prevScore.boundedAdd(-gradualWidening[++leftWindowIndex]);
-	    m_pEngine->getCallbacks().score(score, boundType, depth / ONEPLY, m_numNodes,
-					    CurrentTime() - m_pGlobal->goTime,
-					    std::span(m_previousPv, m_previousPv));
+	    sendScoreAndPV(score, boundType, depth / ONEPLY, m_numNodes,
+			   CurrentTime() - m_pGlobal->goTime, move);
 
 	  } else {
 	    beta = prevScore.boundedAdd(gradualWidening[++rightWindowIndex]);
 
 	    // Note: don't update prevScore as we use it for window centre.
 	    prevBestMove = move;
-	    m_previousPvLength = m_pvLength[0];
-	    for (int i = 0; i < m_previousPvLength; i++)
-	      m_previousPv[i] = m_pvTable[0][i];
-	    m_pEngine->getCallbacks().score(score, boundType, depth / ONEPLY, m_numNodes,
-					    CurrentTime() - m_pGlobal->goTime,
-					    std::span(m_previousPv, m_previousPv + m_previousPvLength));
+	    sendScoreAndPV(score, boundType, depth / ONEPLY, m_numNodes,
+			   CurrentTime() - m_pGlobal->goTime, move);
 	  }
 
-	  std::tie(move, score, boundType) = SearchRoot(depth, alpha, beta);
+	  std::tie(move, score, boundType) = SearchRoot(depth, prevBestMove, alpha, beta);
 	}
 
 	/* If we did not have a chance to fully explore any root
@@ -844,19 +875,13 @@ namespace DSchack {
 	   was fully examined.  */
 	prevBestMove = move;
 	prevScore = score;
-	m_previousPvLength = m_pvLength[0];
-	for (int i = 0; i < m_previousPvLength; i++)
-	  m_previousPv[i] = m_pvTable[0][i];
-	m_pEngine->getCallbacks().score(score, boundType, depth / ONEPLY, m_numNodes,
-					CurrentTime() - m_pGlobal->goTime,
-					std::span(m_previousPv, m_previousPv + m_previousPvLength));
+	sendScoreAndPV(score, boundType, depth / ONEPLY, m_numNodes,
+		       CurrentTime() - m_pGlobal->goTime, move);
       }
 
       /* Search is done. Print a ponder move if prevBestMove is
          the same as the PV move.  */
-      std::optional<Move> ponderMove = std::nullopt;
-      if (m_previousPvLength >= 2 && m_previousPv[0].sameAs(prevBestMove))
-	ponderMove = m_previousPv[1];
+      std::optional<Move> ponderMove = getPonderMove(prevBestMove);
 
       m_pGlobal->inProgress.store(false);
       m_pEngine->getCallbacks().bestmove(prevBestMove, ponderMove);
