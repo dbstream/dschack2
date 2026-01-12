@@ -600,7 +600,8 @@ namespace DSchack {
     }
 
     std::tuple<Move, Score, BoundType> SearchRoot(int depth, Move prevBestMove,
-						  Score alpha, Score beta)
+						  Score alpha, Score beta,
+						  bool isAspiring)
     {
       m_numNodes = 0;
       m_numRootMovesExamined = 0;
@@ -630,7 +631,10 @@ namespace DSchack {
 	  alpha = score;
 	  if (score >= beta)
 	    return std::make_tuple(prevBestMove, score, LOWERBOUND);
-	}
+	} else if (isAspiring)
+	  /* If we fail low on the principal variation when aspiring, return
+	     immediately so that the window is widened faster.  */
+	  return std::make_tuple(prevBestMove, score, LOWERBOUND);
       }
 
       MovePicker movePicker(m_pEngine->getPosition(),
@@ -780,7 +784,8 @@ namespace DSchack {
 	 to get an initial approximation of score.  */
       {
 	auto [move, score, boundType] = SearchRoot(ONEPLY, prevBestMove,
-						   SCORE_MIN, SCORE_MAX);
+						   SCORE_MIN, SCORE_MAX,
+						   false);
 
 	/* If we are stopped here, we have nothing to go on, so we
 	   return the move we arbitrarily picked above  (the other
@@ -838,7 +843,7 @@ namespace DSchack {
 	Score alpha = prevScore.boundedAdd(-gradualWidening[leftWindowIndex]);
 	Score beta = prevScore.boundedAdd(gradualWidening[rightWindowIndex]);
 
-	auto [move, score, boundType] = SearchRoot(depth, prevBestMove, alpha, beta);
+	auto [move, score, boundType] = SearchRoot(depth, prevBestMove, alpha, beta, true);
 	while ((leftWindowIndex < maxWindowIndex && score <= alpha) || (rightWindowIndex < maxWindowIndex && beta <= score)) {
 	  if (shouldSoftStop() || shouldHardStop() || !m_numRootMovesExamined)
 	    break;
@@ -861,7 +866,8 @@ namespace DSchack {
 			   CurrentTime() - m_pGlobal->goTime, move);
 	  }
 
-	  std::tie(move, score, boundType) = SearchRoot(depth, prevBestMove, alpha, beta);
+	  std::tie(move, score, boundType) = SearchRoot(depth, prevBestMove, alpha, beta,
+							leftWindowIndex != maxWindowIndex);
 	}
 
 	/* If we did not have a chance to fully explore any root
