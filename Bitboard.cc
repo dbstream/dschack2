@@ -179,6 +179,33 @@ namespace DSchack {
     return captures | pushes;
   }
 
+  static constexpr Bitboard sideFiles[8] = {
+    BB_A_FILE | BB_B_FILE,
+    BB_A_FILE | BB_B_FILE | BB_C_FILE,
+    BB_B_FILE | BB_C_FILE | BB_D_FILE,
+    BB_C_FILE | BB_D_FILE | BB_E_FILE,
+    BB_D_FILE | BB_E_FILE | BB_F_FILE,
+    BB_E_FILE | BB_F_FILE | BB_G_FILE,
+    BB_F_FILE | BB_G_FILE | BB_H_FILE,
+    BB_G_FILE | BB_H_FILE
+  };
+
+  static constexpr Bitboard calcPawnFrontSpanU(int sq)
+  {
+    Bitboard front = LShift(~Bitboard(0), (RankOf(sq) + 1) * BBNorth);
+    Bitboard sides = sideFiles[FileOf(sq)];
+
+    return front & sides;
+  }
+
+  static constexpr Bitboard calcPawnFrontSpanD(int sq)
+  {
+    Bitboard front = LShift(~Bitboard(0), (8 - RankOf(sq)) * BBSouth);
+    Bitboard sides = sideFiles[FileOf(sq)];
+
+    return front & sides;
+  }
+
   // Slow version of InBetween.
   static constexpr Bitboard calcInBetween(int sq1, int sq2)
   {
@@ -262,6 +289,9 @@ namespace DSchack {
   static Bitboard pawnAttackersUTable[64];
   static Bitboard pawnAttackersDTable[64];
 
+  static Bitboard pawnFrontSpanUTable[64];
+  static Bitboard pawnFrontSpanDTable[64];
+
   static Bitboard inBetweenTable[64][64];
 
   void InitBitboards()
@@ -306,6 +336,9 @@ namespace DSchack {
 
       pawnAttackersUTable[sq] = PawnAttacksD(~UINT64_C(0), sq);
       pawnAttackersDTable[sq] = PawnAttacksU(~UINT64_C(0), sq);
+
+      pawnFrontSpanUTable[sq] = calcPawnFrontSpanU(sq);
+      pawnFrontSpanDTable[sq] = calcPawnFrontSpanD(sq);
 
       for (int sq2 = 0; sq2 < 64; sq2++)
 	inBetweenTable[sq][sq2] = calcInBetween(sq, sq2);
@@ -354,6 +387,16 @@ namespace DSchack {
   Bitboard PawnAttackersD(int sq)
   {
     return pawnAttackersDTable[sq];
+  }
+
+  Bitboard PawnFrontSpanU(int sq)
+  {
+    return pawnFrontSpanUTable[sq];
+  }
+
+  Bitboard PawnFrontSpanD(int sq)
+  {
+    return pawnFrontSpanDTable[sq];
   }
 
   Bitboard InBetween(int sq1, int sq2)
