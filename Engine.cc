@@ -62,6 +62,7 @@ namespace DSchack {
 
   void Engine::stop()
   {
+    m_internal->searchGlobalState.ponder.store(false, std::memory_order_release);
     m_internal->searchGlobalState.stopRequested.store(true, std::memory_order_release);
     m_internal->searcherThread.waitForIdle();
   }
