@@ -39,7 +39,7 @@ namespace DSchack {
       info depth 5
       info score cp -32 depth 5 nodes 12345 time 1023 pv f2f3 e7e5 g2g4 ... */
     virtual void score(Score score, BoundType boundType,
-		       int depth, uint64_t nodes,
+		       int depth, int seldepth, uint64_t nodes,
 		       int search_ms, std::span<const Move> pv) = 0;
 
     /** nps: send information about current nodes/s being searched.
@@ -61,6 +61,14 @@ namespace DSchack {
     protocol is UCI:
       bestmove e4d5 ponder d8d5  */
     virtual void bestmove(Move move, std::optional<Move> ponderMove) = 0;
+
+    /** info: send an arbitrary string to the user.
+    @s: information string.
+
+    This function should send a line like the following if the
+    protocol is UCI:
+      info string (contents of @s...)  */
+    virtual void info(std::string_view s) = 0;
   };
 
   class Engine {

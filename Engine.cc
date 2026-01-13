@@ -122,6 +122,11 @@ namespace DSchack {
       }
       s.softTimeLimit = s.goTime + soft;
       s.hardTimeLimit.store(s.goTime + hard, std::memory_order_relaxed);
+      {
+	std::stringstream ss;
+	ss << "timeman soft " << soft << " hard " << hard;
+	getCallbacks().info(ss.view());
+      }
     }
 
     m_internal->searcherThread.start(callSearch(this, &s,

@@ -103,11 +103,11 @@ namespace DSchack {
     ~UCIEngineCallbacks() {}
 
     void score(Score score, BoundType boundType,
-	       int depth, uint64_t nodes,
+	       int depth, int seldepth, uint64_t nodes,
 	       int search_ms, std::span<const Move> pv) override
     {
       gCoutMutex.lock();
-      std::cout << "info depth " << depth << " score ";
+      std::cout << "info depth " << depth << " seldepth " << seldepth << " score ";
       if (score.isCheckmate())
 	std::cout << "mate " << score.depthToMate();
       else
@@ -139,6 +139,13 @@ namespace DSchack {
 	std::cout << " ponder " << ponderMove.value().toUCI();
       }
       std::cout << "\n";
+      gCoutMutex.unlock();
+    }
+
+    void info(std::string_view s) override
+    {
+      gCoutMutex.lock();
+      std::cout << "info string " << s << "\n";
       gCoutMutex.unlock();
     }
   };
@@ -429,8 +436,10 @@ namespace DSchack {
       for (std::string_view s : parts) {
 	if (field) {
 	  int value = parseInt(s);
-	  if (value < 0)
+	  if (value < 0) {
+	    field = NONE;
 	    continue;
+	  }
 	  switch (field) {
 	  case PERFT: perft_ = value; break;
 	  case DEPTH: depth = value; break;

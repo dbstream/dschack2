@@ -20,6 +20,8 @@ namespace DSchack {
 
   static constexpr int ONEPLY = 16;
 
+  struct TimeOverToken {};
+
   static constexpr void updateHistory(int &location, int bonus)
   {
     if (bonus < -MAX_HISTORY)
@@ -170,6 +172,7 @@ namespace DSchack {
     uint64_t m_numNodes = 0;
     uint64_t m_numNodesPerS = 0;
     uint64_t m_lastPeriodicInfo;
+    int m_maxPlySearched;
     int m_numRootMovesExamined;
     int m_moveOffset;
     Move m_movelist[MAX_PLY + 100]; // +100 to leave space for past moves (capped by rule50).
@@ -183,6 +186,30 @@ namespace DSchack {
     bool shouldHardStop()
     {
       return m_pGlobal->stopRequested.load(std::memory_order_relaxed);
+    }
+
+    void waitForNonPonder()
+    {
+      /* This is really awful.
+
+	 Busy wait until we receive ponderhit or stop. This is
+	 required because the UCI protocol doesn't allow us to
+	 send bestmove while in infinite search or pondering
+	 search.  */
+
+      while (pondering()) {
+#ifdef __AMD64__
+	__builtin_ia32_pause();
+#endif
+      }
+
+      if (m_pGlobal->infinite) {
+	while (!shouldHardStop()) {
+#ifdef __AMD64__
+	  __builtin_ia32_pause();
+#endif
+	}
+      }
     }
 
     bool shouldSoftStop()
@@ -236,18 +263,18 @@ namespace DSchack {
       return false;
     }
 
-    // Increment numNodes. Return false if we should hard-stop.
+    // Increment numNodes and potentially change shouldHardStop.
     bool incrementNodes()
     {
-      if (shouldHardStop())
-	return false;
-
       m_numNodes++;
       m_numNodesPerS++;
 
       // Every 1000 or so nodes, check the current time.
 
       if (m_numNodesPerS & 1023)
+	return false;
+
+      if (shouldHardStop())
 	return true;
 
       uint64_t t = CurrentTime();
@@ -264,304 +291,14 @@ namespace DSchack {
       uint64_t limit = m_pGlobal->hardTimeLimit.load(std::memory_order_relaxed);
       if (limit && t >= limit) {
 	m_pGlobal->stopRequested.store(true, std::memory_order_relaxed);
-	return false;
+	return true;
       }
 
-      return true;
+      return false;
     }
 
-    Score Quiesce(const Position &pos, int ply,
-		  int repPly, Score alpha, Score beta)
-    {
-      if (ply >= MAX_PLY)
-	return Evaluate(pos);
-
-      if (!incrementNodes())
-	return alpha;
-
-      std::optional<TTEntry> ttEntry = m_tt->probe(pos);
-      if (ttEntry) {
-	if (ttEntry->boundType != UPPERBOUND && ttEntry->score >= beta)
-	  return ttEntry->score;
-      }
-
-      Score standing_eval = Evaluate(pos);
-      if (standing_eval >= alpha) {
-	alpha = standing_eval;
-	if (standing_eval >= beta)
-	  return standing_eval;
-      }
-
-      Score bestScore = standing_eval;
-
-      MovePicker movePicker(pos, m_historyArray[pos.sideToMove() != WHITE], true);
-      while (std::optional<Move> optMove = movePicker.nextMove()) {
-	Move move = optMove.value();
-
-	Position nextPos = pos;
-	nextPos.makeMove(move);
-	m_movelist[m_moveOffset + ply] = move;
-
-	Score score = Quiesce(nextPos, ply + 1,
-			      ply + 1, -beta, -alpha).negated();
-	if (score > bestScore) {
-	  bestScore = score;
-	  if (score > alpha) {
-	    alpha = score;
-	    if (score >= beta) {
-	      m_tt->insert(pos, move, beta, LOWERBOUND, 0);
-	      return score;
-	    }
-	  }
-	}
-      }
-
-      return bestScore;
-    }
-
-    template<bool IsPV>
-    Score SearchNode(const Position &pos, int ply, int depth,
-		     int repPly, Score alpha, Score beta)
-    {
-      // Detect draw by 50-moves rule.
-      if (pos.rule50() >= 100)
-	return Score(0);
-
-      // Detect draw by repetition.
-      if (detectRepetition(repPly, ply))
-	return Score(0);
-
-      if (ply >= MAX_PLY)
-	return Evaluate(pos);
-
-      // Check extension.
-      if (pos.inCheck())
-	depth += ONEPLY;
-
-      if (depth <= 0)
-	return Quiesce(pos, ply, repPly, alpha, beta);
-
-      if (!incrementNodes())
-	return alpha;
-
-      Score initialAlpha(alpha);
-
-      Move bestMove;
-      Score bestScore(CHECKMATE_SCORE);
-
-      /* Always search the TT move first, if there is one. */
-
-      Move ttMove;
-      std::optional<TTEntry> ttEntry = m_tt->probe(pos);
-      if (ttEntry) {
-	ttMove = ttEntry->move;
-
-	/* Allow transposition table cutoffs if the TT entry was
-	   searched with at least our depth and we are not the
-	   principal variation.  */
-
-	if (!IsPV && ttEntry->depth >= depth) {
-	  if (ttEntry->boundType != UPPERBOUND && ttEntry->score >= beta)
-	    return ttEntry->score;
-	}
-
-	Position nextPos = pos;
-	nextPos.makeMove(ttMove);
-	m_movelist[m_moveOffset + ply] = ttMove;
-
-	int nextRepPly = ttMove.resetsRule50() ? ply + 1 : repPly;
-	Score score = SearchNode<IsPV>(nextPos, ply + 1, depth - ONEPLY,
-				       nextRepPly, -beta, -alpha).negated();
-
-	if (shouldHardStop())
-	  return score;
-
-	bestMove = ttMove;
-	bestScore = score;
-	if (score > alpha) {
-	  alpha = score;
-	  if (score >= beta) {
-	    m_tt->insert(pos, ttMove, beta, LOWERBOUND, depth);
-	    return score;
-	  }
-	}
-      }
-
-      /* Now search all other moves. */
-
-      MovePicker movePicker(pos, m_historyArray[pos.sideToMove() != WHITE]);
-      while (std::optional<Move> optMove = movePicker.nextMove()) {
-	Move move = optMove.value();
-
-	/* Skip the TT move, as we already searched that one before.  */
-
-	if (move.sameAs(ttMove))
-	  continue;
-
-	Position nextPos = pos;
-	nextPos.makeMove(move);
-	m_movelist[m_moveOffset + ply] = move;
-
-	int nextRepPly = move.resetsRule50() ? ply + 1 : repPly;
-	Score score = SearchNode<false>(nextPos, ply + 1, depth - ONEPLY,
-					nextRepPly, -beta, -alpha).negated();
-
-	if (shouldHardStop())
-	  return score;
-
-	if (score > bestScore) {
-	  bestMove = move;
-	  bestScore = score;
-	  if (score > alpha) {
-	    alpha = score;
-	    if (score >= beta) {
-	      movePicker.betaCutoff(depth);
-	      m_tt->insert(pos, move, beta, LOWERBOUND, depth);
-	      return score;
-	    }
-	  }
-	}
-      }
-
-      if (bestScore == CHECKMATE_SCORE && !pos.inCheck())
-	bestScore = Score(0);
-
-      if (bestScore <= initialAlpha)
-	m_tt->insert(pos, bestMove, alpha, UPPERBOUND, depth);
-      else
-	m_tt->insert(pos, bestMove, bestScore, EXACT, depth);
-      return bestScore;
-    }
-
-    std::tuple<Move, Score, BoundType> SearchRoot(int depth, Move prevBestMove,
-						  Score alpha, Score beta,
-						  bool isAspiring)
-    {
-      m_numNodes = 0;
-      m_numRootMovesExamined = 0;
-
-      Move bestMove;
-      Score bestScore(CHECKMATE_SCORE);
-
-      Score initialAlpha = alpha;
-
-      /* Always search prevBestMove first.  */
-
-      {
-	Position nextPos = m_pEngine->getPosition();
-	nextPos.makeMove(prevBestMove);
-	m_movelist[m_moveOffset] = prevBestMove;
-
-	int repPly = prevBestMove.resetsRule50() ? 1 : -m_moveOffset;
-	Score score = SearchNode<true>(nextPos, 1, depth - ONEPLY,
-				       repPly, -beta, -alpha).negated();
-
-	if (!shouldHardStop())
-	  m_numRootMovesExamined++;
-
-	bestMove = prevBestMove;
-	bestScore = score;
-	if (score > alpha) {
-	  alpha = score;
-	  if (score >= beta)
-	    return std::make_tuple(prevBestMove, score, LOWERBOUND);
-	} else if (isAspiring)
-	  /* If we fail low on the principal variation when aspiring, return
-	     immediately so that the window is widened faster.  */
-	  return std::make_tuple(prevBestMove, score, LOWERBOUND);
-      }
-
-      MovePicker movePicker(m_pEngine->getPosition(),
-			    m_historyArray[m_pEngine->getPosition().sideToMove() != WHITE]);
-
-      bool searchedAllMoves = false;
-      for(;;) {
-	std::optional<Move> optMove = movePicker.nextMove();
-	if (!optMove) {
-	  searchedAllMoves = true;
-	  break;
-	}
-
-	Move move = optMove.value();
-
-	/* Search all moves in this position besides the TT
-	   move, since we already searched that one earlier.  */
-	if (move.sameAs(prevBestMove))
-	  continue;
-
-	Position nextPos = m_pEngine->getPosition();
-	nextPos.makeMove(move);
-	m_movelist[m_moveOffset] = move;
-
-	int repPly = move.resetsRule50() ? 1 : -m_moveOffset;
-	Score score = SearchNode<false>(nextPos, 1, depth - ONEPLY,
-					repPly, -beta, -alpha).negated();
-
-	if (shouldHardStop())
-	  break;
-
-	m_numRootMovesExamined++;
-	if (score > bestScore) {
-	  bestMove = move;
-	  bestScore = score;
-	  if (score > alpha) {
-	    alpha = score;
-	    if (score >= beta) {
-	      movePicker.betaCutoff(depth);
-	      return std::make_tuple(move, score, LOWERBOUND);
-	    }
-	  }
-	}
-
-	/* Now is a good time to check for soft-stop. We have
-	   searched at least one move so we have a LOWERBOUND
-	   that we can fall back on.  */
-	if (shouldSoftStop())
-	  break;
-      }
-
-      /* If we fail low, return UPPERBOUND. If we fail high,
-	 or we stopped early, return LOWERBOUND. Otherwise,
-	 return EXACT.
-
-	 Note that we can incorrectly return UPPERBOUND in
-	 some cases where we fail low before having searched
-	 any move that raises alpha.  This can happen even
-	 when there is a move which raises alpha, for example
-	 if a time limit is reached before we have finished
-	 searching.  */
-      if (bestScore <= initialAlpha)
-	return std::make_tuple(bestMove, alpha, UPPERBOUND);
-      else if (bestScore < beta && searchedAllMoves)
-	return std::make_tuple(bestMove, bestScore, EXACT);
-      else
-	return std::make_tuple(bestMove, bestScore, LOWERBOUND);
-    }
-
-  public:
-    Searcher(Engine *engine, SearchGlobalState *global,
-	     TranspositionTable *tt)
-    {
-      m_pEngine = engine;
-      m_pGlobal = global;
-      m_tt = tt;
-      m_lastPeriodicInfo = global->goTime;
-
-      const std::vector<Move> repMoves = engine->getRepetitionMoves();
-      m_moveOffset = repMoves.size();
-      for (int i = 0; i < m_moveOffset; i++)
-	m_movelist[i] = repMoves[i];
-      for (int i = 0; i < 2; i++) {
-	for (int j = 0; j < 64; j++) {
-	  for (int k = 0; k < 64; k++)
-	    m_historyArray[i][j][k] = 0;
-	}
-      }
-    }
-
-    void sendScoreAndPV(Score score, BoundType boundType, int depth,
-			uint64_t numNodes, int elapsedMs,
-			std::optional<Move> bestMove)
+    void sendScoreAndPV(Score score, BoundType boundType,
+			int depth, std::optional<Move> bestMove)
     {
       int numPvMoves = 0;
       if (bestMove) {
@@ -590,8 +327,12 @@ namespace DSchack {
 
       std::span<Move> pv = std::span<Move>(m_movelist + m_moveOffset,
 					   m_movelist + m_moveOffset + numPvMoves);
-      m_pEngine->getCallbacks().score(score, boundType, depth,
-				      numNodes, elapsedMs, pv);
+      m_pEngine->getCallbacks().score(score, boundType,
+				      depth / ONEPLY,
+				      m_maxPlySearched,
+				      m_numNodes,
+				      CurrentTime() - m_pGlobal->goTime,
+				      pv);
     }
 
     std::optional<Move> getPonderMove(Move prevBestMove)
@@ -606,127 +347,409 @@ namespace DSchack {
 	return std::nullopt;
     }
 
-    void Search()
+    template<bool IsPV>
+    Score Negamax(const Position &pos,
+		  int depth,
+		  int ply, int repPly,
+		  Score alpha, Score beta)
     {
-      /* We always need some move and score to return in case we are
-	 stopped before we even have a chance to search anything.  This
-	 is a quick and dirty way to do that.  */
-      Move prevBestMove = MovePicker(m_pEngine->getPosition(), m_historyArray[0]).nextMove().value();
-      Score prevScore(-20000);
+      if (pos.rule50() >= 100)
+	return Score(0);
 
-      /* Run a first iteration of iterative deepening with an open window
-	 to get an initial approximation of score.  */
-      {
-	auto [move, score, boundType] = SearchRoot(ONEPLY, prevBestMove,
-						   SCORE_MIN, SCORE_MAX,
-						   false);
+      if (detectRepetition(repPly, ply))
+	return Score(0);
 
-	/* If we are stopped here, we have nothing to go on, so we
-	   return the move we arbitrarily picked above  (the other
-	   option would be crashing).  */
-	if (shouldHardStop()) {
-	  m_pGlobal->inProgress.store(false);
-	  m_pEngine->getCallbacks().bestmove(prevBestMove, std::nullopt);
-	  return;
+      if (incrementNodes())
+	throw TimeOverToken();
+
+      if (ply > m_maxPlySearched)
+	m_maxPlySearched = ply;
+
+      if (ply >= MAX_PLY)
+	return Evaluate(pos);
+
+      if (depth < 0)
+	depth = 0;
+
+      /* Check extension: search deeper if we are in check.  */
+
+      if (pos.inCheck())
+	depth += ONEPLY;
+
+      Score bestScore(SCORE_MIN);
+      Move bestMove;
+
+      bool raisedAlpha = false;
+
+      /* Probe the transposition table.  */
+
+      Move ttMove;
+      std::optional<TTEntry> tt = m_tt->probe(pos);
+
+      if (tt) {
+	ttMove = tt->move;
+
+	/* Transposition table cutoffs: if the TT depth is
+	   greater than or equal than our depth, cutoff if
+	   the score is a lowerbound and above beta or an
+	   upperbound and below alpha.
+
+	   If the bound if exact and we are in a PV node,
+	   only cutoff if we are quiescing.  */
+	if (tt->depth >= depth) {
+	  switch(tt->boundType) {
+	  case LOWERBOUND:
+	    if (tt->score >= beta)
+	      return tt->score;
+	    break;
+	  case UPPERBOUND:
+	    if (tt->score <= alpha)
+	      return tt->score;
+	    break;
+	  default:
+	    if (!IsPV || depth <= 0)
+	      return tt->score;
+	  }
 	}
 
-	prevBestMove = move;
-	prevScore = score;
-	sendScoreAndPV(score, boundType, 1, m_numNodes,
-		       CurrentTime() - m_pGlobal->goTime,
-		       std::nullopt);
+	/* In quiescence search, don't search the hash
+	   move if it is not a capture.  */
+	if (depth <= 0 && !ttMove.isCapture())
+	  goto skipTTMove;
+
+	/* Search the hash move first.  */
+
+	Position nextPos = pos;
+	nextPos.makeMove(ttMove);
+	m_movelist[m_moveOffset + ply] = ttMove;
+
+	int nextRepPly = ttMove.resetsRule50() ? ply + 1 : repPly;
+
+	Score score = Negamax<IsPV>(nextPos, depth - ONEPLY,
+				    ply + 1, nextRepPly,
+				    -beta, -alpha).negated();
+
+	bestScore = score;
+	bestMove = ttMove;
+
+	if (score > alpha) {
+	  raisedAlpha = true;
+	  alpha = score;
+	  if (score >= beta) {
+	    m_tt->insert(pos, ttMove, beta, LOWERBOUND, depth);
+	    return score;
+	  }
+	}
       }
 
-      /* Iterative deepening loop. We begin at depth 2, because we
-         already searched depth 1 earlier. */
-      for (int depth = 2 * ONEPLY;; depth += ONEPLY) {
+skipTTMove:
+      Score standingPatScore(SCORE_MIN);
 
-	if (shouldHardStop())
-	  break;
+      /* If we are in quiescence search, ensure we have a
+	 standing-pat score.  */
+      if (depth <= 0) {
+	standingPatScore = Evaluate(pos);
 
-	/* If we are not pondering, right now is a very good time
-	   to check for soft time constraints.  */
+	if (standingPatScore > bestScore)
+	  bestScore = standingPatScore;
 
-	if (!pondering() && !m_pGlobal->infinite) {
-	  if (m_pGlobal->depthLimit && (depth / ONEPLY) > m_pGlobal->depthLimit)
-	    break;
-	  uint64_t limit = m_pGlobal->softTimeLimit;
-	  if (limit && CurrentTime() >= limit) {
-	    break;
-	  }
-
-	  /* If we know that we have a checkmate, we can break
-	     early here to not waste our time.  Additionally,
-	     when we see that we are being mated, we assume that
-	     our opponent also sees this, so just move immediately.  */
-	  if (prevScore.isCheckmate())
-	    break;
+	if (standingPatScore > alpha) {
+	  raisedAlpha = true;
+	  alpha = standingPatScore;
 	}
 
-	/* Aspiration windows: use the search result from the previous
-	   iteration of iterative deepening as a decent guess for the
-	   score in this iteration. Set alpha and beta bounds based on
-	   a fixed window around prevScore. If the search fails low or
-	   high, increase the bound that failed but keep the other
-	   bound as it is.  */
-	static constexpr int maxWindowIndex = 2;
-	static constexpr int gradualWidening[maxWindowIndex + 1] = { 25, 100, 65535 };
+	if (standingPatScore >= beta)
+	  return standingPatScore;
+      }
 
-	int leftWindowIndex = 0;
-	int rightWindowIndex = 0;
-	Score alpha = prevScore.boundedAdd(-gradualWidening[leftWindowIndex]);
-	Score beta = prevScore.boundedAdd(gradualWidening[rightWindowIndex]);
+      /* Now search all other moves.  */
 
-	auto [move, score, boundType] = SearchRoot(depth, prevBestMove, alpha, beta, true);
-	while ((leftWindowIndex < maxWindowIndex && score <= alpha) || (rightWindowIndex < maxWindowIndex && beta <= score)) {
-	  if (shouldSoftStop() || shouldHardStop() || !m_numRootMovesExamined)
-	    break;
+      MovePicker mp(pos, m_historyArray[ply & 1], depth <= 0);
+      while (std::optional<Move> optMove = mp.nextMove()) {
+	Move move = optMove.value();
 
-	  /* If the search failed low, the move returned can be bogus,
-	     so don't update the PV in that case.  */
+	/* Skip the TT move, since we already searched
+	   that one.  */
+	if (move.sameAs(ttMove))
+	  continue;
 
-	  if (score <= alpha && leftWindowIndex < maxWindowIndex) {
+	Position nextPos = pos;
+	nextPos.makeMove(move);
+	m_movelist[m_moveOffset + ply] = move;
 
-	    alpha = prevScore.boundedAdd(-gradualWidening[++leftWindowIndex]);
-	    sendScoreAndPV(score, boundType, depth / ONEPLY, m_numNodes,
-			   CurrentTime() - m_pGlobal->goTime, move);
+	int nextRepPly = move.resetsRule50() ? ply + 1 : repPly;
 
-	  } else {
-	    beta = prevScore.boundedAdd(gradualWidening[++rightWindowIndex]);
+	Score score;
 
-	    // Note: don't update prevScore as we use it for window centre.
-	    prevBestMove = move;
-	    sendScoreAndPV(score, boundType, depth / ONEPLY, m_numNodes,
-			   CurrentTime() - m_pGlobal->goTime, move);
-	  }
+	if (!raisedAlpha || depth <= 0)
+	  goto searchAsPV;
 
-	  std::tie(move, score, boundType) = SearchRoot(depth, prevBestMove, alpha, beta,
-							leftWindowIndex != maxWindowIndex);
+	/* Null window search: if we have raised alpha, we have
+	   a best score in this position already. This means we
+	   can do a scout search to prove that a move is worse
+	   than our known best move.
+
+	   We avoid NWS in quiescence search.  */
+
+	score = Negamax<false>(nextPos, depth - ONEPLY,
+			       ply + 1, nextRepPly,
+			       (-alpha).boundedAdd(-1),
+			       -alpha).negated();
+
+	if (IsPV && alpha < score) {
+searchAsPV:
+	  score = Negamax<IsPV>(nextPos, depth - ONEPLY,
+				ply + 1, nextRepPly,
+				-beta, -alpha).negated();
 	}
 
-	/* If we did not have a chance to fully explore any root
-	   moves, stop here.  Even if we did not examine all root
-	   moves, as long as we examined at least one move we can
-	   be sure that we examined the previous PV move, because
-	   we always do that first.  */
-	if (!m_numRootMovesExamined)
+	if (score > bestScore) {
+	  bestScore = score;
+	  bestMove = move;
+	}
+
+	if (score > alpha) {
+	  raisedAlpha = true;
+	  alpha = score;
+	  if (score >= beta) {
+	    /* Beta cutoff.  */
+	    mp.betaCutoff(depth);
+	    m_tt->insert(pos, move, beta, LOWERBOUND, depth);
+	    return score;
+	  }
+	}
+      }
+
+      if (bestScore == SCORE_MIN) {
+	if (pos.inCheck())
+	  return CHECKMATE_SCORE;
+	else
+	  return Score(0);
+      }
+
+      /* We cannot insert into the transposition table if we
+	 lack a bestMove (e.g. if quiescence search ends up
+	 with the standing-pat score).  */
+      if (bestScore != standingPatScore)
+	m_tt->insert(pos, bestMove, bestScore,
+		     raisedAlpha ? EXACT : UPPERBOUND,
+		     depth);
+      return bestScore;
+    }
+
+    std::tuple<Move, Score, BoundType> SearchRoot(int depth, Move pvMove,
+						  Score alpha, Score beta)
+    {
+      const Position &pos = m_pEngine->getPosition();
+      m_maxPlySearched = 0;
+
+      /* Search the pvMove first.
+
+         This ensures we don't lose the best move when we
+         exit in the middle of a search.  */
+
+      try {
+	Position nextPos = pos;
+	nextPos.makeMove(pvMove);
+	m_movelist[m_moveOffset] = pvMove;
+
+	int repPly = pvMove.resetsRule50() ? 1 : -m_moveOffset;
+
+	Score score = Negamax<true>(nextPos, depth - ONEPLY,
+				    1, repPly, -beta, -alpha).negated();
+
+	/* If we fail low on the first move, we are aspiring and
+	   we should immediately return the fail low so that the
+	   window is widened.  */
+
+	if (score <= alpha)
+	  return std::make_tuple(pvMove, alpha, UPPERBOUND);
+
+	alpha = score;
+      } catch (TimeOverToken token) {
+	/* If we did not even have a chance to search the
+	   principal variation, just return alpha. The search
+	   is over anyways and this score won't land in the TT.  */
+
+	return std::make_tuple(pvMove, alpha, LOWERBOUND);
+      }
+
+      if (alpha >= beta)
+	/* The principal variation caused a beta cutoff. This
+	   also happens because of aspiration windows.  */
+	return std::make_tuple(pvMove, alpha, LOWERBOUND);
+
+      Move bestMove = pvMove;
+      MovePicker mp(pos, m_historyArray[0]);
+
+      while (std::optional<Move> optMove = mp.nextMove()) {
+	Move move = optMove.value();
+
+	/* Skip the principal variation move.  */
+	if (move.sameAs(pvMove))
+	  continue;
+
+	Position nextPos = pos;
+	nextPos.makeMove(move);
+	m_movelist[m_moveOffset] = move;
+
+	int repPly = move.resetsRule50() ? 1 : -m_moveOffset;
+
+	Score score;
+	try {
+	  /* Null window search. */
+	  score = Negamax<false>(nextPos, depth - ONEPLY,
+				 1, repPly,
+				 (-alpha).boundedAdd(-1),
+				 -alpha).negated();
+	} catch (TimeOverToken token) {
+
+	  /* If we run out of time in the midst of searching, we
+	     can fall back to the best move we have searched thus
+	     far as a lower-bound. This is safe because we search
+	     the principal variation search.  */
+
+	  return std::make_tuple(bestMove, alpha, LOWERBOUND);
+	}
+
+	/* If the null window search fails high, we must retry
+	   the search with an open window (or our (a; b) window).  */
+	if (score > alpha) {
+	  try {
+	    score = Negamax<true>(nextPos, depth - ONEPLY,
+				  1, repPly, -beta, -alpha).negated();
+	  } catch (TimeOverToken token) {
+	    /* We failed high in the null window search. This
+	       means that our move was deemed better than the
+	       previous known best move.  */
+
+	    return std::make_tuple(move, score, LOWERBOUND);
+	  }
+
+	  /* Because of search instability, the score might have
+	     dropped below alpha when we re-search.  Test if the
+	     score is still above alpha before updating bestMove.  */
+	  if (score > alpha) {
+	    bestMove = move;
+	    alpha = score;
+	    if (score >= beta) {
+	      /* Beta cutoff.  */
+	      mp.betaCutoff(depth);
+	      return std::make_tuple(move, score, LOWERBOUND);
+	    }
+	  }
+	}
+
+	/* Now is a really good time to test for soft-stopping
+	   conditions.  */
+	if (shouldSoftStop()) {
+	  if (mp.nextMove())
+	    return std::make_tuple(bestMove, alpha, LOWERBOUND);
+	  else
+	    return std::make_tuple(bestMove, alpha, EXACT);
+	}
+      }
+
+      return std::make_tuple(bestMove, alpha, EXACT);
+    }
+
+  public:
+    Searcher(Engine *engine, SearchGlobalState *global,
+	     TranspositionTable *tt)
+    {
+      m_pEngine = engine;
+      m_pGlobal = global;
+      m_tt = tt;
+      m_lastPeriodicInfo = global->goTime;
+
+      const std::vector<Move> repMoves = engine->getRepetitionMoves();
+      m_moveOffset = repMoves.size();
+      for (int i = 0; i < m_moveOffset; i++)
+	m_movelist[i] = repMoves[i];
+      for (int i = 0; i < 2; i++) {
+	for (int j = 0; j < 64; j++) {
+	  for (int k = 0; k < 64; k++)
+	    m_historyArray[i][j][k] = 0;
+	}
+      }
+    }
+
+    void Search()
+    {
+      /* Start out with any random move as the PV.  */
+      Move bestMove = MovePicker(m_pEngine->getPosition(),
+				     m_historyArray[0]).nextMove().value();
+
+      Score score;
+      BoundType boundType;
+
+      /* Perform an initial fixed-depth search to get a
+	 first approximation of the score.  */
+
+      std::tie(bestMove, score, boundType) = SearchRoot(ONEPLY,
+							bestMove,
+							SCORE_MIN,
+							SCORE_MAX);
+
+      sendScoreAndPV(score, boundType, ONEPLY, bestMove);
+
+      /* Iterative deepening.  */
+
+      int searchDepth = 2 * ONEPLY;
+      while (!shouldHardStop() && !shouldSoftStop()) {
+	if (m_pGlobal->depthLimit &&
+	    searchDepth / ONEPLY > m_pGlobal->depthLimit)
 	  break;
 
-	/* SearchRoot guarantees that if m_numRootMovesExamined is
-	   greater than or equal to one, the move that is returned
-	   was fully examined.  */
-	prevBestMove = move;
-	prevScore = score;
-	sendScoreAndPV(score, boundType, depth / ONEPLY, m_numNodes,
-		       CurrentTime() - m_pGlobal->goTime, move);
+	/* If we have found a checkmate (for us or for the
+	   opponent), exit the search immediately.  */
+
+	if (score.isCheckmate())
+	  break;
+
+	/* Perform an aspirated search with a fixed window of
+	   20 centipawns, on the assumption that the score
+	   doesn't change much with each iteration.  */
+
+	Score alpha = score.boundedAdd(-20);
+	Score beta = score.boundedAdd(20);
+
+	std::tie(bestMove, score, boundType) = SearchRoot(searchDepth,
+							  bestMove,
+							  alpha, beta);
+
+	if (boundType != LOWERBOUND || !score.isCheckmate())
+	  sendScoreAndPV(score, boundType, searchDepth, bestMove);
+
+	if (score <= alpha || beta <= score) {
+	  if (shouldHardStop() || shouldSoftStop())
+	    break;
+
+	  /* The aspirated search failed and we should research the root
+	     move with an open window.  */
+
+	  std::tie(bestMove, score, boundType) = SearchRoot(searchDepth,
+							    bestMove,
+							    SCORE_MIN,
+							    SCORE_MAX);
+
+	  if (boundType != LOWERBOUND || !score.isCheckmate())
+	    sendScoreAndPV(score, boundType, searchDepth, bestMove);
+	}
+
+	searchDepth += ONEPLY;
       }
 
       /* Search is done. Print a ponder move if prevBestMove is
          the same as the PV move.  */
-      std::optional<Move> ponderMove = getPonderMove(prevBestMove);
+
+      std::optional<Move> ponderMove = getPonderMove(bestMove);
+
+      m_pEngine->getCallbacks().info("search exited");
+      waitForNonPonder();
 
       m_pGlobal->inProgress.store(false);
-      m_pEngine->getCallbacks().bestmove(prevBestMove, ponderMove);
+      m_pEngine->getCallbacks().bestmove(bestMove, ponderMove);
     }
   };
 

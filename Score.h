@@ -25,6 +25,10 @@ namespace DSchack {
   struct Score {
     int16_t m_value;
 
+    constexpr Score()
+      : m_value(0)
+    {}
+
     constexpr Score(int16_t value)
       : m_value(value)
     {}
