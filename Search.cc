@@ -676,9 +676,20 @@ searchAsPV:
 
     void Search()
     {
+      std::vector<Move> legalMoves;
+      std::vector<std::optional<Move>> ponderMoves;
+
+      {
+	MovePicker mp(m_pEngine->getPosition(),
+		      m_historyArray[0]);
+	while (std::optional<Move> optMove = mp.nextMove()) {
+	  legalMoves.push_back(optMove.value());
+	  ponderMoves.push_back(std::nullopt);
+	}
+      }
+
       /* Start out with any random move as the PV.  */
-      Move bestMove = MovePicker(m_pEngine->getPosition(),
-				     m_historyArray[0]).nextMove().value();
+      Move bestMove = legalMoves[0];
 
       Score score;
       BoundType boundType;
@@ -738,12 +749,24 @@ searchAsPV:
 	}
 
 	searchDepth += ONEPLY;
+
+	/* Update ponder moves.  */
+	for (size_t i = 0; i < legalMoves.size(); i++) {
+	  std::optional<Move> ponderMove = getPonderMove(legalMoves[i]);
+	  if (ponderMove)
+	    ponderMoves[i] = ponderMove;
+	}
       }
 
-      /* Search is done. Print a ponder move if prevBestMove is
-         the same as the PV move.  */
+      /* Search is done. Try really hard to get a ponder move.  */
 
-      std::optional<Move> ponderMove = getPonderMove(bestMove);
+      std::optional<Move> ponderMove = std::nullopt;
+      for (size_t i = 0; i < legalMoves.size(); i++) {
+	if (legalMoves[i].sameAs(bestMove)) {
+	  ponderMove = ponderMoves[i];
+	  break;
+	}
+      }
 
       m_pEngine->getCallbacks().info("search exited");
       waitForNonPonder();
