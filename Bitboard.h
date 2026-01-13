@@ -247,14 +247,6 @@ namespace DSchack {
       given square.  */
   Bitboard PawnAttackersD(int sq);
 
-  /** PawnFrontSpanU: get the front span of a pawn that
-      moves upwards.  */
-  Bitboard PawnFrontSpanU(int sq);
-
-  /** PawnFrontSpanD: get the front span of a pawn that
-      moves downwards.  */
-  Bitboard PawnFrontSpanD(int sq);
-
   /** InBetween: get the bitboard representing the line
       between two squares. If this is not a horizontal,
       vertical, or diagonal, only the target square bit

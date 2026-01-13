@@ -160,38 +160,6 @@ namespace DSchack {
     }
   };
 
-  struct PawnHashEntry {
-    /* This is a bitmask of where the pawns are for both
-       sides. This is used only as a 'key' for the pawn
-       hash table.  */
-    Bitboard pawns[2];
-
-    /* A passed pawn is a pawn which has no enemy pawn
-       in his front span. For example:
-       ...xxx..
-       ...xxx..
-       ...xxx..
-       ...xxx..
-       ....P...
-       ........
-       ........
-       ........
-       The front span of the white pawn on e4 consists
-       of the squares marked with 'x'.
-
-       This bitmask contains passed pawns for both
-       sides.  */
-    Bitboard passedPawns;
-
-    /* A stacked pawn is a pawn which is on the same
-       file as and behind another friendly pawn. A so
-       called "doubled pawn".
-
-       This bitmask contains stacked pawns for both
-       sides.  */
-    Bitboard stackedPawns;
-  };
-
   static constexpr int MAX_PLY = 100;
 
   class Searcher {
@@ -205,55 +173,6 @@ namespace DSchack {
     int m_moveOffset;
     Move m_movelist[MAX_PLY + 100]; // +100 to leave space for past moves (capped by rule50).
     int m_historyArray[2][64][64];
-
-    static constexpr uint64_t pawnHashMask = 2047;
-    PawnHashEntry m_pawnTable[pawnHashMask + 1];
-
-    PawnHashEntry getPawnEval(const Position &pos)
-    {
-      Bitboard whitePawns = pos.pieces(WHITE, PAWN);
-      Bitboard blackPawns = pos.pieces(BLACK, PAWN);
-      uint64_t key = UINT64_C(11137230202775511001) * whitePawns
-	           + UINT64_C(18411709898762097989) * blackPawns;
-      key &= pawnHashMask;
-
-      PawnHashEntry e = m_pawnTable[key];
-      if (e.pawns[WHITE] == whitePawns && e.pawns[BLACK] == blackPawns)
-	return e;
-
-      e.pawns[WHITE] = whitePawns;
-      e.pawns[BLACK] = blackPawns;
-      e.passedPawns = 0;
-      e.stackedPawns = 0;
-
-      Bitboard tmp = whitePawns;
-      while (Bitboard p = PopLS1B(tmp)) {
-	Bitboard front = PawnFrontSpanU(Sq(p));
-	if (!(front & (whitePawns | blackPawns)))
-	  e.passedPawns |= p;
-      }
-      tmp = blackPawns;
-      while (Bitboard p = PopLS1B(tmp)) {
-	Bitboard front = PawnFrontSpanD(Sq(p));
-	if (!(front & (whitePawns | blackPawns)))
-	  e.passedPawns |= p;
-      }
-
-      Bitboard whiteBackSpan = LShift(whitePawns, BBSouth);
-      whiteBackSpan |= LShift(whiteBackSpan, BBSouth);
-      whiteBackSpan |= LShift(whiteBackSpan, 2 * BBSouth);
-      whiteBackSpan |= LShift(whiteBackSpan, 4 * BBSouth);
-      e.stackedPawns |= whitePawns & whiteBackSpan;
-
-      Bitboard blackBackSpan = LShift(blackPawns, BBNorth);
-      blackBackSpan |= LShift(blackBackSpan, BBNorth);
-      blackBackSpan |= LShift(blackBackSpan, 2 * BBNorth);
-      blackBackSpan |= LShift(blackBackSpan, 4 * BBNorth);
-      e.stackedPawns |= blackPawns & blackBackSpan;
-
-      m_pawnTable[key] = e;
-      return e;
-    }
 
     bool pondering()
     {
@@ -488,8 +407,6 @@ namespace DSchack {
       int score_mg = 0;
       int score_eg = 0;
 
-      PawnHashEntry pawns = getPawnEval(pos);
-
       for (PieceType piece : allPieceTypes) {
 	Bitboard white_occ = pos.pieces(WHITE, piece);
 	Bitboard black_occ = pos.pieces(BLACK, piece);
@@ -512,15 +429,7 @@ namespace DSchack {
 
       int materialScore = (score_mg * phase + score_eg * (24 - phase)) / 24;
 
-      int numWhitePassedPawns = Popcount(pawns.pawns[WHITE] & pawns.passedPawns);
-      int numBlackPassedPawns = Popcount(pawns.pawns[BLACK] & pawns.passedPawns);
-      int passedPawnBonus = (numWhitePassedPawns - numBlackPassedPawns) * 20;
-
-      int numWhiteStackedPawns = Popcount(pawns.pawns[WHITE] & pawns.stackedPawns);
-      int numBlackStackedPawns = Popcount(pawns.pawns[BLACK] & pawns.stackedPawns);
-      int stackedPawnPenalty = (numWhiteStackedPawns - numBlackStackedPawns) * 15;
-
-      int score = materialScore + passedPawnBonus - stackedPawnPenalty;
+      int score = materialScore;
       if (pos.sideToMove() == BLACK)
 	return -score;
       else
