@@ -44,11 +44,11 @@ namespace DSchack {
 
     /** nps: send information about current nodes/s being searched.
     @count: nodes per second.
-    @hashfull: transposition table usage (percentage).
+    @hashfull: transposition table usage (1/1000th of hashtable size).
 
     This function should send a line like the following if the
     protocol is UCI:
-      info nps 11234 hashfull 22  */
+      info nps 11234 hashfull 220  */
     virtual void nps(uint64_t count, int hashfull) = 0;
 
     /** bestmove: send information about what the engine deems to

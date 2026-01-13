@@ -6,7 +6,15 @@
 The transposition table is probably the single most important
 datastructure for the performance of a chess engine. Every node
 probes the transposition table as the very first thing it does,
-so it is really important that it is fast.  */
+so it is really important that it is fast.
+
+It is also really important that the transposition table makes
+informed decisions about when to evict hash entries. This is
+called the "replacement policy".
+
+We implement a simple replacement policy where each hash index
+into the transposition table maps to two entries: one which is
+depth-preferred and one always-replace entry.  */
 
 #include "Transposition.h"
 
@@ -34,7 +42,7 @@ namespace DSchack {
       numEntries &= ~(numEntries & -numEntries);
 
     m_entries.resize(numEntries);
-    m_mask = numEntries - 1;
+    m_mask = numEntries - 2;
     m_numEntries = numEntries;
     clear();
   }
@@ -48,7 +56,7 @@ namespace DSchack {
 
   int TranspositionTable::hashfull()
   {
-    return (100 * m_numFull) / m_numEntries;
+    return (1000 * m_numFull) / m_numEntries;
   }
 
   std::optional<TTEntry> TranspositionTable::probe(const Position &pos)
@@ -57,7 +65,10 @@ namespace DSchack {
     if (!key)
       return std::nullopt;
 
-    TTEntryEncoded enc = m_entries[key & m_mask];
+    uint64_t index = key & m_mask;
+    TTEntryEncoded enc = m_entries[index];
+    if (enc.key != key)
+      enc = m_entries[index + 1];
     if (enc.key != key)
       return std::nullopt;
 
@@ -98,8 +109,22 @@ namespace DSchack {
     enc.flags = static_cast<uint16_t>(boundType);
     enc.depth = depth;
 
-    if (!m_entries[enc.key & m_mask].key)
+    uint64_t index = enc.key & m_mask;
+    if (m_entries[index].key) {
+      if (enc.depth >= m_entries[index].depth) {
+	if (m_entries[index].key != enc.key) {
+	  if (!m_entries[index + 1].key)
+	    m_numFull++;
+	  m_entries[index + 1] = m_entries[index];
+	}
+      } else if (m_entries[index].key == enc.key)
+	return;
+      else
+	index++;
+    }
+
+    if (!m_entries[index].key)
       m_numFull++;
-    m_entries[enc.key & m_mask] = enc;
+    m_entries[index] = enc;
   }
 } // namespace DSchack
