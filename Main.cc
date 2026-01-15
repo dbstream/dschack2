@@ -144,8 +144,21 @@ namespace DSchack {
 
     void info(std::string_view s) override
     {
+      std::vector<std::string_view> lines;
+      for (;;) {
+	size_t n = s.find('\n');
+	if (n == std::string_view::npos) {
+	  if (s.size())
+	    lines.push_back(s);
+	  break;
+	}
+	lines.push_back(s.substr(0, n));
+	s = s.substr(n + 1);
+      }
+
       gCoutMutex.lock();
-      std::cout << "info string " << s << "\n";
+      for (std::string_view l : lines)
+	std::cout << "info string " << l << "\n";
       gCoutMutex.unlock();
     }
   };

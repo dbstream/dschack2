@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <memory>
 #include <optional>
+#include <sstream>
 #include <tuple>
 
 #include "Engine.h"
@@ -16,6 +17,44 @@
 #include "Transposition.h"
 
 namespace DSchack {
+  struct SearchStatistics {
+    int numAllNodes = 0;
+    int ttMisses = 0;
+    int ttHits = 0;
+    int ttDeep = 0;
+    int ttCutoffs = 0;
+    int ttSearchCutoffs = 0;
+    int ttFailLow = 0;
+    int numPVSResearch = 0;
+    int betaCutoffDistribution[300] = { 0 };
+
+    void show(EngineCallbacks &cb)
+    {
+      std::stringstream ss;
+
+      ss << "Search statistics:\n";
+      ss << "  numAllNodes=" << numAllNodes << "\n";
+      ss << "  ttHits=" << ttHits << "\n";
+      ss << "  ttMisses=" << ttMisses << "\n";
+      ss << "  ttDeep=" << ttDeep << "\n";
+      ss << "  ttCutoffs=" << ttCutoffs << "\n";
+      ss << "  ttSearchCutoffs=" << ttSearchCutoffs << "\n";
+      ss << "  ttFailLow=" << ttFailLow << "\n";
+      ss << "  numPVSResearch=" << numPVSResearch << "\n";
+      ss << "  betaCutoffDistribution=";
+      int m = 0;
+      for (int i = 0; i < 300; i++) {
+	if (betaCutoffDistribution[i])
+	  m = i + 1;
+      }
+      for (int i = 0; i < m; i++)
+	ss << " " << betaCutoffDistribution[i];
+      ss << "\n";
+
+      cb.info(ss.view());
+    }
+  };
+
   static constexpr int MAX_HISTORY = 10000;
 
   static constexpr int ONEPLY = 16;
@@ -177,6 +216,8 @@ namespace DSchack {
     int m_moveOffset;
     Move m_movelist[MAX_PLY + 100]; // +100 to leave space for past moves (capped by rule50).
     int m_historyArray[2][64][64];
+
+    SearchStatistics m_stat;
 
     bool pondering()
     {
@@ -380,6 +421,7 @@ namespace DSchack {
       Move bestMove;
 
       bool raisedAlpha = false;
+      int numMovesSearched = 0;
 
       /* Probe the transposition table.  */
 
@@ -387,6 +429,8 @@ namespace DSchack {
       std::optional<TTEntry> tt = m_tt->probe(pos);
 
       if (tt) {
+	m_stat.ttHits++;
+
 	ttMove = tt->move;
 
 	/* Transposition table cutoffs: if the TT depth is
@@ -397,18 +441,26 @@ namespace DSchack {
 	   If the bound if exact and we are in a PV node,
 	   only cutoff if we are quiescing.  */
 	if (tt->depth >= depth) {
+	  m_stat.ttDeep++;
 	  switch(tt->boundType) {
 	  case LOWERBOUND:
-	    if (tt->score >= beta)
+	    if (tt->score >= beta) {
+	      m_stat.ttCutoffs++;
 	      return tt->score;
+	    }
 	    break;
 	  case UPPERBOUND:
-	    if (tt->score <= alpha)
+	    if (tt->score <= alpha) {
+	      m_stat.numAllNodes++;
+	      m_stat.ttCutoffs++;
 	      return tt->score;
+	    }
 	    break;
 	  default:
-	    if (!IsPV || depth <= 0)
+	    if (!IsPV || depth <= 0) {
+	      m_stat.ttCutoffs++;
 	      return tt->score;
+	    }
 	  }
 	}
 
@@ -429,6 +481,8 @@ namespace DSchack {
 				    ply + 1, nextRepPly,
 				    -beta, -alpha).negated();
 
+	numMovesSearched++;
+
 	bestScore = score;
 	bestMove = ttMove;
 
@@ -436,11 +490,15 @@ namespace DSchack {
 	  raisedAlpha = true;
 	  alpha = score;
 	  if (score >= beta) {
+	    m_stat.betaCutoffDistribution[0]++;
+	    m_stat.ttSearchCutoffs++;
 	    m_tt->insert(pos, ttMove, beta, LOWERBOUND, depth);
 	    return score;
 	  }
-	}
-      }
+	} else
+	  m_stat.ttFailLow++;
+      } else
+	m_stat.ttMisses++;
 
 skipTTMove:
       Score standingPatScore(SCORE_MIN);
@@ -497,6 +555,7 @@ skipTTMove:
 			       -alpha).negated();
 
 	if (IsPV && alpha < score) {
+	  m_stat.numPVSResearch++;
 searchAsPV:
 	  score = Negamax<IsPV>(nextPos, depth - ONEPLY,
 				ply + 1, nextRepPly,
@@ -513,11 +572,14 @@ searchAsPV:
 	  alpha = score;
 	  if (score >= beta) {
 	    /* Beta cutoff.  */
+	    m_stat.betaCutoffDistribution[numMovesSearched]++;
 	    mp.betaCutoff(depth);
 	    m_tt->insert(pos, move, beta, LOWERBOUND, depth);
 	    return score;
 	  }
 	}
+
+	numMovesSearched++;
       }
 
       if (bestScore == SCORE_MIN) {
@@ -534,6 +596,10 @@ searchAsPV:
 	m_tt->insert(pos, bestMove, bestScore,
 		     raisedAlpha ? EXACT : UPPERBOUND,
 		     depth);
+
+      if (!raisedAlpha)
+	m_stat.numAllNodes++;
+
       return bestScore;
     }
 
@@ -769,6 +835,7 @@ searchAsPV:
       }
 
       m_pEngine->getCallbacks().info("search exited");
+      m_stat.show(m_pEngine->getCallbacks());
       waitForNonPonder();
 
       m_pGlobal->inProgress.store(false);
