@@ -1,3 +1,14 @@
++---------------------------+
+| DSchack: Embedded Edition |
++---------------------------+
+
+This is the embedded branch of DSchack. It is intended to be a port of
+DSchack suitable for environments with additional constraints, such as
+microcontrollers (must run in very small amounts of RAM and limited
+asynchronicity / standard library features).
+
+Below are the contents of the original README:
+
 DSchack 2.0: now with cool new move generator!
 
 DSchack is the chess engine held together by duct tape, hopes and prayers,
