@@ -73,56 +73,6 @@ namespace DSchack {
     location += bonus - (location * abs_bonus) / MAX_HISTORY;
   }
 
-  /** SEE: Static Exchange Evaluation - cheaply evaluate a capture.
-  @pos: the current position
-  @move: the move to statically evaluate
-  Returns the expected change in material.  */
-  static int SEE(const Position &pos, Move move)
-  {
-    static constexpr int pieceValues[6] = { 90, 300, 330, 495, 980, 10000 };
-
-    Color us = pos.sideToMove();
-    Color them = (us == WHITE) ? BLACK : WHITE;
-
-    int gain[36];
-    int depth = 0;
-    int toSq = move.toSquare();
-    int attacker = move.piece();
-    Bitboard occ = pos.pieces(BOTH, ALL) ^ BB(move.fromSquare());
-    Bitboard att = pos.attackers(BOTH, toSq);
-    Bitboard from = BB(move.fromSquare());
-    Bitboard bishopXray = BishopAttacks(0, toSq);
-    Bitboard rookXray = RookAttacks(0, toSq);
-    if (move.isCapture())
-      gain[0] = pieceValues[move.capture()];
-    else
-      gain[0] = 0;
-    do {
-      depth++;
-      gain[depth] = pieceValues[attacker] - gain[depth - 1];
-      occ ^= from;
-      att ^= from;
-      if (from & bishopXray)
-	att |= BishopAttacks(occ, toSq) & occ & (pos.pieces(BOTH, BISHOP)
-					       | pos.pieces(BOTH, QUEEN));
-      from = 0;
-      for (int i = 0; i < 6; i++) {
-	Bitboard pcs = att & pos.pieces((depth & 1) ? them : us, static_cast<PieceType>(i));
-	if (pcs) {
-	  attacker = i;
-	  from = LS1B(pcs);
-	  break;
-	}
-      }
-    } while(from);
-    while (--depth) {
-      int x = -gain[depth];
-      if (x < gain[depth - 1])
-	gain[depth - 1] = x;
-    }
-    return gain[0];
-  }
-
   static thread_local Move mp_moves_buffer[10000];
   static thread_local Move *mp_moves_end = mp_moves_buffer;
 
