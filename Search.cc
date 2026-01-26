@@ -3,11 +3,7 @@
 
    Copyright (C) 2026 David Bergström  */
 
-#include <array>
 #include <algorithm>
-#include <memory>
-#include <optional>
-#include <sstream>
 #include <tuple>
 
 #include "Engine.h"
@@ -118,7 +114,6 @@ namespace DSchack {
     Engine *m_pEngine;
     TranspositionTable *m_tt;
     uint64_t m_numNodes = 0;
-    int m_numRootMovesExamined;
     int m_moveOffset;
     Move m_movelist[MAX_PLY + 100]; // +100 to leave space for past moves (capped by rule50).
     int m_historyArray[2][64][64];
@@ -472,8 +467,10 @@ searchAsPV:
     }
 
   public:
-    Searcher(Engine *engine, TranspositionTable *tt)
+    void reset(Engine *engine, TranspositionTable *tt)
     {
+      m_numNodes = 0;
+      m_shouldStop = false;
       m_pEngine = engine;
       m_tt = tt;
 
@@ -566,7 +563,8 @@ searchAsPV:
 
   Move Search(Engine *engine, TranspositionTable *tt)
   {
-    std::unique_ptr<Searcher> searcher = std::make_unique<Searcher>(engine, tt);
-    return searcher->Search();
+    static Searcher searcher;
+    searcher.reset(engine, tt);
+    return searcher.Search();;
   }
 } // namespace DSchack

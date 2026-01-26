@@ -14,7 +14,6 @@ A transposition table entry stores the following information:
 #pragma once
 
 #include <stdint.h>
-#include <vector>
 
 #include "Position.h"
 #include "Score.h"
@@ -48,17 +47,16 @@ namespace DSchack {
   };
 
   class TranspositionTable {
-    std::vector<TTEntryEncoded> m_entries;
-    uint64_t m_mask;
-    uint64_t m_numEntries;
+    static constexpr uint64_t m_numEntries = 4096;
+    static constexpr uint64_t m_mask = m_numEntries - 2;
+
+    TTEntryEncoded m_entries[m_numEntries];
     uint64_t m_numFull;
 
   public:
-    TranspositionTable(uint64_t numEntries = 4096);
+    TranspositionTable();
 
     ~TranspositionTable();
-
-    void resize(uint64_t numEntries);
 
     void clear();
 

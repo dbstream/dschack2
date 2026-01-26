@@ -8,8 +8,6 @@ encapsulated into a single object of the type Engine.  */
 
 #pragma once
 
-#include <memory>
-#include <optional>
 #include <stdint.h>
 #include <span>
 #include <vector>
@@ -18,16 +16,12 @@ encapsulated into a single object of the type Engine.  */
 #include "Score.h"
 
 namespace DSchack {
-  struct EngineInternal;
-
   class Engine {
     // The current engine position.
     Position m_position;
 
     // The list of past moves which are relevant for repetition detection.
     std::vector<Move> m_repetitionMoves;
-
-    std::unique_ptr<EngineInternal> m_internal;
 
   public:
     ~Engine();

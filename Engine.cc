@@ -10,21 +10,17 @@
 #include "Transposition.h"
 
 namespace DSchack {
-  struct EngineInternal {
-    TranspositionTable transpositionTable;
-  };
+  static TranspositionTable transpositionTable;
 
   Engine::~Engine()
   {}
 
   Engine::Engine()
-  {
-    m_internal = std::make_unique<EngineInternal>();
-  }
+  {}
 
   void Engine::newGame()
   {
-    m_internal->transpositionTable.clear();
+    transpositionTable.clear();
   }
 
   void Engine::setPosition(const Position &pos, const std::vector<Move> &pastMoves)
@@ -41,6 +37,6 @@ namespace DSchack {
 
   Move Engine::go()
   {
-    return Search(this, &m_internal->transpositionTable);
+    return Search(this, &transpositionTable);
   }
 }
