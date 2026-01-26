@@ -19,6 +19,5 @@ target_sources(DSchack PRIVATE
   "MoveGen.cc"
   "Position.cc"
   "Search.cc"
-  "Threads.cc"
   "Transposition.cc"
 )

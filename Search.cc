@@ -17,44 +17,6 @@
 #include "Transposition.h"
 
 namespace DSchack {
-  struct SearchStatistics {
-    int numAllNodes = 0;
-    int ttMisses = 0;
-    int ttHits = 0;
-    int ttDeep = 0;
-    int ttCutoffs = 0;
-    int ttSearchCutoffs = 0;
-    int ttFailLow = 0;
-    int numPVSResearch = 0;
-    int betaCutoffDistribution[300] = { 0 };
-
-    void show(EngineCallbacks &cb)
-    {
-      std::stringstream ss;
-
-      ss << "Search statistics:\n";
-      ss << "  numAllNodes=" << numAllNodes << "\n";
-      ss << "  ttHits=" << ttHits << "\n";
-      ss << "  ttMisses=" << ttMisses << "\n";
-      ss << "  ttDeep=" << ttDeep << "\n";
-      ss << "  ttCutoffs=" << ttCutoffs << "\n";
-      ss << "  ttSearchCutoffs=" << ttSearchCutoffs << "\n";
-      ss << "  ttFailLow=" << ttFailLow << "\n";
-      ss << "  numPVSResearch=" << numPVSResearch << "\n";
-      ss << "  betaCutoffDistribution=";
-      int m = 0;
-      for (int i = 0; i < 300; i++) {
-	if (betaCutoffDistribution[i])
-	  m = i + 1;
-      }
-      for (int i = 0; i < m; i++)
-	ss << " " << betaCutoffDistribution[i];
-      ss << "\n";
-
-      cb.info(ss.view());
-    }
-  };
-
   static constexpr int MAX_HISTORY = 10000;
 
   static constexpr int ONEPLY = 16;
@@ -156,63 +118,17 @@ namespace DSchack {
 
   class Searcher {
     Engine *m_pEngine;
-    SearchGlobalState *m_pGlobal;
     TranspositionTable *m_tt;
     uint64_t m_numNodes = 0;
-    uint64_t m_numNodesPerS = 0;
-    uint64_t m_lastPeriodicInfo;
-    int m_maxPlySearched;
     int m_numRootMovesExamined;
     int m_moveOffset;
     Move m_movelist[MAX_PLY + 100]; // +100 to leave space for past moves (capped by rule50).
     int m_historyArray[2][64][64];
-
-    SearchStatistics m_stat;
-
-    bool pondering()
-    {
-      return m_pGlobal->ponder.load(std::memory_order_acquire);
-    }
+    bool m_shouldStop = false;
 
     bool shouldHardStop()
     {
-      return m_pGlobal->stopRequested.load(std::memory_order_relaxed);
-    }
-
-    void waitForNonPonder()
-    {
-      /* This is really awful.
-
-	 Busy wait until we receive ponderhit or stop. This is
-	 required because the UCI protocol doesn't allow us to
-	 send bestmove while in infinite search or pondering
-	 search.  */
-
-      while (pondering()) {
-#ifdef __AMD64__
-	__builtin_ia32_pause();
-#endif
-      }
-
-      if (m_pGlobal->infinite) {
-	while (!shouldHardStop()) {
-#ifdef __AMD64__
-	  __builtin_ia32_pause();
-#endif
-	}
-      }
-    }
-
-    bool shouldSoftStop()
-    {
-      if (!pondering() && !m_pGlobal->infinite) {
-	uint64_t limit = m_pGlobal->softTimeLimit;
-	if (limit && CurrentTime() >= limit) {
-	  return true;
-	}
-      }
-
-      return false;
+      return m_shouldStop;
     }
 
     /** detectRepetition: detect repetition of a position.
@@ -258,84 +174,11 @@ namespace DSchack {
     bool incrementNodes()
     {
       m_numNodes++;
-      m_numNodesPerS++;
 
-      // Every 1000 or so nodes, check the current time.
+      if (m_numNodes >= 1000000)
+	m_shouldStop = true;
 
-      if (m_numNodesPerS & 1023)
-	return false;
-
-      if (shouldHardStop())
-	return true;
-
-      uint64_t t = CurrentTime();
-
-      // Try to print nps once per second.
-      int elapsed = t - m_lastPeriodicInfo;
-      if (elapsed >= 1000) {
-	m_pEngine->getCallbacks().nps(1000 * m_numNodesPerS / elapsed,
-				      m_tt->hashfull());
-	m_numNodesPerS = 0;
-	m_lastPeriodicInfo = t;
-      }
-
-      uint64_t limit = m_pGlobal->hardTimeLimit.load(std::memory_order_relaxed);
-      if (limit && t >= limit) {
-	m_pGlobal->stopRequested.store(true, std::memory_order_relaxed);
-	return true;
-      }
-
-      return false;
-    }
-
-    void sendScoreAndPV(Score score, BoundType boundType,
-			int depth, std::optional<Move> bestMove)
-    {
-      int numPvMoves = 0;
-      if (bestMove) {
-	numPvMoves = 1;
-	m_movelist[m_moveOffset] = bestMove.value();
-	Position pos = m_pEngine->getPosition();
-	pos.makeMove(bestMove.value());
-	int rep_ply = -m_moveOffset;
-	if (bestMove.value().resetsRule50())
-	  rep_ply = 1;
-
-	while (numPvMoves < MAX_PLY) {
-	  if (pos.rule50() >= 100)
-	    break;
-	  if (detectRepetition(rep_ply, numPvMoves))
-	    break;
-	  std::optional<TTEntry> ttEntry = m_tt->probe(pos);
-	  if (!ttEntry)
-	    break;
-	  m_movelist[m_moveOffset + numPvMoves++] = ttEntry->move;
-	  pos.makeMove(ttEntry->move);
-	  if (ttEntry->move.resetsRule50())
-	    rep_ply = numPvMoves;
-	}
-      }
-
-      std::span<Move> pv = std::span<Move>(m_movelist + m_moveOffset,
-					   m_movelist + m_moveOffset + numPvMoves);
-      m_pEngine->getCallbacks().score(score, boundType,
-				      depth / ONEPLY,
-				      m_maxPlySearched,
-				      m_numNodes,
-				      CurrentTime() - m_pGlobal->goTime,
-				      pv);
-    }
-
-    std::optional<Move> getPonderMove(Move prevBestMove)
-    {
-      Position pos = m_pEngine->getPosition();
-      pos.makeMove(prevBestMove);
-
-      std::optional<TTEntry> ttEntry = m_tt->probe(pos);
-      if (ttEntry)
-	return ttEntry->move;
-      else
-	return std::nullopt;
+      return shouldHardStop();
     }
 
     template<bool IsPV>
@@ -353,9 +196,6 @@ namespace DSchack {
       if (incrementNodes())
 	throw TimeOverToken();
 
-      if (ply > m_maxPlySearched)
-	m_maxPlySearched = ply;
-
       if (ply >= MAX_PLY)
 	return Evaluate(pos);
 
@@ -371,7 +211,6 @@ namespace DSchack {
       Move bestMove;
 
       bool raisedAlpha = false;
-      int numMovesSearched = 0;
 
       /* Probe the transposition table.  */
 
@@ -379,8 +218,6 @@ namespace DSchack {
       std::optional<TTEntry> tt = m_tt->probe(pos);
 
       if (tt) {
-	m_stat.ttHits++;
-
 	ttMove = tt->move;
 
 	/* Transposition table cutoffs: if the TT depth is
@@ -391,26 +228,18 @@ namespace DSchack {
 	   If the bound if exact and we are in a PV node,
 	   only cutoff if we are quiescing.  */
 	if (tt->depth >= depth) {
-	  m_stat.ttDeep++;
 	  switch(tt->boundType) {
 	  case LOWERBOUND:
-	    if (tt->score >= beta) {
-	      m_stat.ttCutoffs++;
+	    if (tt->score >= beta)
 	      return tt->score;
-	    }
 	    break;
 	  case UPPERBOUND:
-	    if (tt->score <= alpha) {
-	      m_stat.numAllNodes++;
-	      m_stat.ttCutoffs++;
+	    if (tt->score <= alpha)
 	      return tt->score;
-	    }
 	    break;
 	  default:
-	    if (!IsPV || depth <= 0) {
-	      m_stat.ttCutoffs++;
+	    if (!IsPV || depth <= 0)
 	      return tt->score;
-	    }
 	  }
 	}
 
@@ -431,8 +260,6 @@ namespace DSchack {
 				    ply + 1, nextRepPly,
 				    -beta, -alpha).negated();
 
-	numMovesSearched++;
-
 	bestScore = score;
 	bestMove = ttMove;
 
@@ -440,15 +267,11 @@ namespace DSchack {
 	  raisedAlpha = true;
 	  alpha = score;
 	  if (score >= beta) {
-	    m_stat.betaCutoffDistribution[0]++;
-	    m_stat.ttSearchCutoffs++;
 	    m_tt->insert(pos, ttMove, beta, LOWERBOUND, depth);
 	    return score;
 	  }
-	} else
-	  m_stat.ttFailLow++;
-      } else
-	m_stat.ttMisses++;
+	}
+      }
 
 skipTTMove:
       Score standingPatScore(SCORE_MIN);
@@ -505,7 +328,6 @@ skipTTMove:
 			       -alpha).negated();
 
 	if (IsPV && alpha < score) {
-	  m_stat.numPVSResearch++;
 searchAsPV:
 	  score = Negamax<IsPV>(nextPos, depth - ONEPLY,
 				ply + 1, nextRepPly,
@@ -522,14 +344,11 @@ searchAsPV:
 	  alpha = score;
 	  if (score >= beta) {
 	    /* Beta cutoff.  */
-	    m_stat.betaCutoffDistribution[numMovesSearched]++;
 	    mp.betaCutoff(depth);
 	    m_tt->insert(pos, move, beta, LOWERBOUND, depth);
 	    return score;
 	  }
 	}
-
-	numMovesSearched++;
       }
 
       if (bestScore == SCORE_MIN) {
@@ -547,9 +366,6 @@ searchAsPV:
 		     raisedAlpha ? EXACT : UPPERBOUND,
 		     depth);
 
-      if (!raisedAlpha)
-	m_stat.numAllNodes++;
-
       return bestScore;
     }
 
@@ -557,7 +373,6 @@ searchAsPV:
 						  Score alpha, Score beta)
     {
       const Position &pos = m_pEngine->getPosition();
-      m_maxPlySearched = 0;
 
       /* Search the pvMove first.
 
@@ -655,28 +470,16 @@ searchAsPV:
 	    }
 	  }
 	}
-
-	/* Now is a really good time to test for soft-stopping
-	   conditions.  */
-	if (shouldSoftStop()) {
-	  if (mp.nextMove())
-	    return std::make_tuple(bestMove, alpha, LOWERBOUND);
-	  else
-	    return std::make_tuple(bestMove, alpha, EXACT);
-	}
       }
 
       return std::make_tuple(bestMove, alpha, EXACT);
     }
 
   public:
-    Searcher(Engine *engine, SearchGlobalState *global,
-	     TranspositionTable *tt)
+    Searcher(Engine *engine, TranspositionTable *tt)
     {
       m_pEngine = engine;
-      m_pGlobal = global;
       m_tt = tt;
-      m_lastPeriodicInfo = global->goTime;
 
       const std::vector<Move> repMoves = engine->getRepetitionMoves();
       m_moveOffset = repMoves.size();
@@ -690,17 +493,15 @@ searchAsPV:
       }
     }
 
-    void Search()
+    Move Search()
     {
       std::vector<Move> legalMoves;
-      std::vector<std::optional<Move>> ponderMoves;
 
       {
 	MovePicker mp(m_pEngine->getPosition(),
 		      m_historyArray[0]);
 	while (std::optional<Move> optMove = mp.nextMove()) {
 	  legalMoves.push_back(optMove.value());
-	  ponderMoves.push_back(std::nullopt);
 	}
       }
 
@@ -718,14 +519,11 @@ searchAsPV:
 							SCORE_MIN,
 							SCORE_MAX);
 
-      sendScoreAndPV(score, boundType, ONEPLY, bestMove);
-
       /* Iterative deepening.  */
 
       int searchDepth = 2 * ONEPLY;
-      while (!shouldHardStop() && !shouldSoftStop()) {
-	if (m_pGlobal->depthLimit &&
-	    searchDepth / ONEPLY > m_pGlobal->depthLimit)
+      while (!shouldHardStop()) {
+	if (searchDepth > 30 * ONEPLY)
 	  break;
 
 	/* If we have found a checkmate (for us or for the
@@ -745,11 +543,8 @@ searchAsPV:
 							  bestMove,
 							  alpha, beta);
 
-	if (boundType != LOWERBOUND || !score.isCheckmate())
-	  sendScoreAndPV(score, boundType, searchDepth, bestMove);
-
 	if (score <= alpha || beta <= score) {
-	  if (shouldHardStop() || shouldSoftStop())
+	  if (shouldHardStop())
 	    break;
 
 	  /* The aspirated search failed and we should research the root
@@ -759,44 +554,21 @@ searchAsPV:
 							    bestMove,
 							    SCORE_MIN,
 							    SCORE_MAX);
-
-	  if (boundType != LOWERBOUND || !score.isCheckmate())
-	    sendScoreAndPV(score, boundType, searchDepth, bestMove);
 	}
 
 	searchDepth += ONEPLY;
 
-	/* Update ponder moves.  */
-	for (size_t i = 0; i < legalMoves.size(); i++) {
-	  std::optional<Move> ponderMove = getPonderMove(legalMoves[i]);
-	  if (ponderMove)
-	    ponderMoves[i] = ponderMove;
-	}
       }
 
-      /* Search is done. Try really hard to get a ponder move.  */
+      /* Search is done.  */
 
-      std::optional<Move> ponderMove = std::nullopt;
-      for (size_t i = 0; i < legalMoves.size(); i++) {
-	if (legalMoves[i].sameAs(bestMove)) {
-	  ponderMove = ponderMoves[i];
-	  break;
-	}
-      }
-
-      m_pEngine->getCallbacks().info("search exited");
-      m_stat.show(m_pEngine->getCallbacks());
-      waitForNonPonder();
-
-      m_pGlobal->inProgress.store(false);
-      m_pEngine->getCallbacks().bestmove(bestMove, ponderMove);
+      return bestMove;
     }
   };
 
-  void Search(Engine *engine, SearchGlobalState *state,
-	      TranspositionTable *tt)
+  Move Search(Engine *engine, TranspositionTable *tt)
   {
-    std::unique_ptr<Searcher> searcher = std::make_unique<Searcher>(engine, state, tt);
-    searcher->Search();
+    std::unique_ptr<Searcher> searcher = std::make_unique<Searcher>(engine, tt);
+    return searcher->Search();
   }
 } // namespace DSchack
