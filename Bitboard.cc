@@ -14,7 +14,7 @@ namespace DSchack {
   static constexpr Bitboard EDGES = BB_A_FILE | BB_H_FILE | BB_RANK_1 | BB_RANK_8;
   static constexpr Bitboard CORNERS = BB(A1) | BB(A8) | BB(H1) | BB(H8);
 
-  // Slow version of bishop attack generator, used for verification.
+  // Slow version of bishop attack generator.
   static constexpr Bitboard calcBishopAttacks(Bitboard occ, int sq)
   {
     Bitboard res = 0;
@@ -52,7 +52,7 @@ namespace DSchack {
     return res;
   }
 
-  // Slow version of rook attack generator, used for verification.
+  // Slow version of rook attack generator.
   static constexpr Bitboard calcRookAttacks(Bitboard occ, int sq)
   {
     Bitboard res = 0;
@@ -90,7 +90,7 @@ namespace DSchack {
     return res;
   }
 
-  // Slow version of king attack generator, used for verification.
+  // Slow version of king attack generator.
   static constexpr Bitboard calcKingAttacks(int sq)
   {
     Bitboard res = 0;
@@ -105,7 +105,7 @@ namespace DSchack {
     return res;
   }
 
-  // Slow version of knight attack generator, used for verification.
+  // Slow version of knight attack generator.
   static constexpr Bitboard calcKnightAttacks(int sq)
   {
     Bitboard res = 0;
@@ -131,7 +131,7 @@ namespace DSchack {
     return res;
   }
 
-  // Slow version of upward pawn attack generator, used for verification.
+  // Slow version of upward pawn attack generator.
   static constexpr Bitboard calcPawnAttacksU(Bitboard occ, int sq)
   {
     Bitboard origin = BB(sq);
@@ -155,7 +155,7 @@ namespace DSchack {
     return captures | pushes;
   }
 
-  // Slow version of downward pawn attack generator, used for verification.
+  // Slow version of downward pawn attack generator.
   static constexpr Bitboard calcPawnAttacksD(Bitboard occ, int sq)
   {
     Bitboard origin = BB(sq);
@@ -211,119 +211,31 @@ namespace DSchack {
     return result;
   }
 
-  // Compute n.o. 16-bit entries per square for bishop attacks.
-  static constexpr int calcBishopAttacksSize(int sq)
-  {
-    return 1 << Popcount(calcBishopAttacks(0, sq) & ~EDGES);
-  }
-
-  // Compute n.o. 16-bit entries per square for rook attacks.
-  static constexpr int calcRookAttacksSize(int sq)
-  {
-    return 1 << Popcount(calcRookAttacks(0, sq) &
-			 ((BB(sq) & EDGES) ? ~CORNERS : ~EDGES));
-  }
-
-  static constexpr int bishopTableSize = [](){
-    int sum = 0;
-    for (int sq = 0; sq < 64; sq++)
-      sum += calcBishopAttacksSize(sq);
-    return sum;
-  }();
-
-  static constexpr int rookTableSize = [](){
-    int sum = 0;
-    for (int sq = 0; sq < 64; sq++)
-      sum += calcRookAttacksSize(sq);
-    return sum;
-  }();
-
-  static uint16_t bishopTable[bishopTableSize];
-  static uint16_t rookTable[rookTableSize];
-
-  // PEXT/PDEP bitboards.
-  struct Magic {
-    /* occMask forms the relevant occupance bitmask, which
-       is passed to PEXT.  */
-    Bitboard occMask;
-    /* mask itself is the mask to be used with PDEP of the
-       looked-up 16-bit word.  */
-    Bitboard mask;
-    // Pointer to the lookup table.
-    const uint16_t *table;
-  };
-
-  static Magic bishopMagics[64];
-  static Magic rookMagics[64];
-
   static Bitboard kingTable[64];
   static Bitboard knightTable[64];
 
   static Bitboard pawnAttackersUTable[64];
   static Bitboard pawnAttackersDTable[64];
 
-  static Bitboard inBetweenTable[64][64];
-
   void InitBitboards()
   {
-    int offset = 0;
-    for (int sq = 0; sq < 64; sq++) {
-      bishopMagics[sq].mask = calcBishopAttacks(0, sq);
-      bishopMagics[sq].table = bishopTable + offset;
-      Bitboard relevant_occ = bishopMagics[sq].mask & ~EDGES;
-      bishopMagics[sq].occMask = relevant_occ;
-      uint16_t count = 1U << Popcount(relevant_occ);
-      for (uint16_t i = 0; i < count; i++) {
-	Bitboard occ = PDEP(i, relevant_occ);
-	Bitboard attacks = calcBishopAttacks(occ, sq);
-	bishopTable[offset + i] = PEXT(attacks, bishopMagics[sq].mask);
-      }
-      offset += count;
-    }
-
-    offset = 0;
-    for (int sq = 0; sq < 64; sq++) {
-      rookMagics[sq].mask = calcRookAttacks(0, sq);
-      rookMagics[sq].table = rookTable + offset;
-      Bitboard relevant_occ = rookMagics[sq].mask;
-      if (BB(sq) & EDGES)
-	relevant_occ &= ~CORNERS;
-      else
-	relevant_occ &= ~EDGES;
-      rookMagics[sq].occMask = relevant_occ;
-      uint16_t count = 1U << Popcount(relevant_occ);
-      for (uint16_t i = 0; i < count; i++) {
-	Bitboard occ = PDEP(i, relevant_occ);
-	Bitboard attacks = calcRookAttacks(occ, sq);
-	rookTable[offset + i] = PEXT(attacks, rookMagics[sq].mask);
-      }
-      offset += count;
-    }
-
     for (int sq = 0; sq < 64; sq++) {
       kingTable[sq] = calcKingAttacks(sq);
       knightTable[sq] = calcKnightAttacks(sq);
 
       pawnAttackersUTable[sq] = PawnAttacksD(~UINT64_C(0), sq);
       pawnAttackersDTable[sq] = PawnAttacksU(~UINT64_C(0), sq);
-
-      for (int sq2 = 0; sq2 < 64; sq2++)
-	inBetweenTable[sq][sq2] = calcInBetween(sq, sq2);
     }
   }
 
   Bitboard BishopAttacks(Bitboard occ, int sq)
   {
-    Magic magic = bishopMagics[sq];
-    int index = PEXT(occ, magic.occMask);
-    return PDEP(magic.table[index], magic.mask);
+    return calcBishopAttacks(occ, sq);
   }
 
   Bitboard RookAttacks(Bitboard occ, int sq)
   {
-    Magic magic = rookMagics[sq];
-    int index = PEXT(occ, magic.occMask);
-    return PDEP(magic.table[index], magic.mask);
+    return calcRookAttacks(occ, sq);
   }
 
   Bitboard KingAttacks(int sq)
@@ -358,36 +270,9 @@ namespace DSchack {
 
   Bitboard InBetween(int sq1, int sq2)
   {
-    return inBetweenTable[sq1][sq2];
+    return calcInBetween(sq1, sq2);
   }
 
   void TestBitboards()
-  {
-    for (int sq = 0; sq < 64; sq++) {
-      Bitboard mask = rookMagics[sq].mask & ~EDGES;
-      uint16_t count = Popcount(mask);
-      for (uint16_t i = 0; i < count; i++) {
-	Bitboard occ = PDEP(i, mask);
-	Bitboard attacks = RookAttacks(occ, sq);
-	Bitboard attacksSlow = calcRookAttacks(occ, sq);
-	if (attacks != attacksSlow) {
-	  std::cerr << "TestBitboards: incorrect RookAttacks. sq=" << sq << " i=" << i << " RookAttacks=" << std::fixed << std::setprecision(16) << std::hex << attacks << "\n";
-	  throw std::runtime_error("TestBitboards: incorrect RookAttacks");
-	}
-      }
-    }
-    for (int sq = 0; sq < 64; sq++) {
-      Bitboard mask = bishopMagics[sq].mask & ~EDGES;
-      uint16_t count = Popcount(mask);
-      for (uint16_t i = 0; i < count; i++) {
-	Bitboard occ = PDEP(i, mask);
-	Bitboard attacks = BishopAttacks(occ, sq);
-	Bitboard attacksSlow = calcBishopAttacks(occ, sq);
-	if (attacks != attacksSlow) {
-	  std::cerr << "TestBitboards: incorrect BishopAttacks. sq=" << sq << " i=" << i << " BishopAttacks=" << std::fixed << std::setprecision(16) << std::hex << attacks << "\n";
-	  throw std::runtime_error("TestBitboards: incorrect BishopAttacks");
-	}
-      }
-    }
-  }
+  {}
 } // namespace DSchack
