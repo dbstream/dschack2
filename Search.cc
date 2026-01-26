@@ -474,10 +474,9 @@ searchAsPV:
       m_pEngine = engine;
       m_tt = tt;
 
-      const std::vector<Move> repMoves = engine->getRepetitionMoves();
-      m_moveOffset = repMoves.size();
-      for (int i = 0; i < m_moveOffset; i++)
-	m_movelist[i] = repMoves[i];
+      m_moveOffset = 0;
+      for (Move move : engine->getRepetitionMoves())
+	m_movelist[m_moveOffset++] = move;
       for (int i = 0; i < 2; i++) {
 	for (int j = 0; j < 64; j++) {
 	  for (int k = 0; k < 64; k++)

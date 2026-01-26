@@ -3,8 +3,6 @@
 
    Copyright (C) 2026 David Bergström  */
 
-#include <iostream>
-
 #include "Engine.h"
 #include "Search.h"
 #include "Transposition.h"
@@ -23,15 +21,23 @@ namespace DSchack {
     transpositionTable.clear();
   }
 
-  void Engine::setPosition(const Position &pos, const std::vector<Move> &pastMoves)
+  void Engine::setPosition(const Position &pos, std::span<const Move> pastMoves)
   {
     m_position = pos;
-    m_repetitionMoves.clear();
+    m_numRepetitionMoves = 0;
 
     for (Move move : pastMoves) {
-      m_repetitionMoves.push_back(move);
-      if (move.resetsRule50())
-	m_repetitionMoves.clear();
+      if (move.resetsRule50()) {
+	m_numRepetitionMoves = 0;
+	continue;
+      }
+
+      if (m_numRepetitionMoves == 100) {
+	for (int i = 0; i < 99; i++)
+	  m_repetitionMoves[i] = m_repetitionMoves[i + 1];
+	m_repetitionMoves[99] = move;
+      } else
+	m_repetitionMoves[m_numRepetitionMoves++] = move;
     }
   }
 

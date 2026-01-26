@@ -10,7 +10,6 @@ encapsulated into a single object of the type Engine.  */
 
 #include <stdint.h>
 #include <span>
-#include <vector>
 
 #include "Position.h"
 #include "Score.h"
@@ -21,7 +20,8 @@ namespace DSchack {
     Position m_position;
 
     // The list of past moves which are relevant for repetition detection.
-    std::vector<Move> m_repetitionMoves;
+    Move m_repetitionMoves[100];
+    int m_numRepetitionMoves = 0;
 
   public:
     ~Engine();
@@ -35,9 +35,9 @@ namespace DSchack {
       return m_position;
     }
 
-    const std::vector<Move> &getRepetitionMoves() const
+    std::span<const Move> getRepetitionMoves() const
     {
-      return m_repetitionMoves;
+      return std::span(m_repetitionMoves, m_repetitionMoves + m_numRepetitionMoves);
     }
 
     /** newGame: inform the engine that positions will
@@ -52,7 +52,7 @@ namespace DSchack {
     @pastMoves: the moves that led up to this position.
 
     May not be called if there is a search in progress.  */
-    void setPosition(const Position &pos, const std::vector<Move> &pastMoves);
+    void setPosition(const Position &pos, std::span<const Move> pastMoves);
 
     /** go: search the current position and return the best move.  */
     Move go();
