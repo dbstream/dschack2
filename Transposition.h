@@ -14,6 +14,7 @@ A transposition table entry stores the following information:
 #pragma once
 
 #include <stdint.h>
+#include <optional>
 
 #include "Position.h"
 #include "Score.h"
