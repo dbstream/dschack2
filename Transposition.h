@@ -54,11 +54,11 @@ namespace DSchack {
     uint64_t m_numFull;
 
   public:
-    TranspositionTable(int megabytes = 16);
+    TranspositionTable(uint64_t numEntries = 4096);
 
     ~TranspositionTable();
 
-    void resize(int megabytes);
+    void resize(uint64_t numEntries);
 
     void clear();
 

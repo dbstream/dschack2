@@ -19,23 +19,20 @@ depth-preferred and one always-replace entry.  */
 #include "Transposition.h"
 
 namespace DSchack {
-  TranspositionTable::TranspositionTable(int megabytes)
+  TranspositionTable::TranspositionTable(uint64_t numEntries)
   {
-    m_numEntries = 0;
-    resize(megabytes); // Default to a 16 MiB transposition table.
+    resize(numEntries);
   }
 
   TranspositionTable::~TranspositionTable()
   {}
 
-  void TranspositionTable::resize(int megabytes)
+  void TranspositionTable::resize(uint64_t numEntries)
   {
-    if (megabytes < 1)
-      megabytes = 1;
-    else if (megabytes > 1024)
-      megabytes = 1024;
-
-    uint64_t numEntries = (uint64_t) megabytes * 1048576 / sizeof(TTEntryEncoded);
+    if (numEntries < 1024)
+      numEntries = 1024;
+    else if (numEntries > 1048576)
+      numEntries = 1048576;
 
     /* Make sure numEntries is a power of two.  */
     while (numEntries & ~(numEntries & -numEntries))
