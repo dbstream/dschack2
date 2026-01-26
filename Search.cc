@@ -21,8 +21,6 @@ namespace DSchack {
 
   static constexpr int ONEPLY = 16;
 
-  struct TimeOverToken {};
-
   static constexpr void updateHistory(int &location, int bonus)
   {
     if (bonus < -MAX_HISTORY)
@@ -194,7 +192,7 @@ namespace DSchack {
 	return Score(0);
 
       if (incrementNodes())
-	throw TimeOverToken();
+	return 0;
 
       if (ply >= MAX_PLY)
 	return Evaluate(pos);
@@ -259,6 +257,8 @@ namespace DSchack {
 	Score score = Negamax<IsPV>(nextPos, depth - ONEPLY,
 				    ply + 1, nextRepPly,
 				    -beta, -alpha).negated();
+	if (shouldHardStop())
+	  return 0;
 
 	bestScore = score;
 	bestMove = ttMove;
@@ -326,12 +326,16 @@ skipTTMove:
 			       ply + 1, nextRepPly,
 			       (-alpha).boundedAdd(-1),
 			       -alpha).negated();
+	if (shouldHardStop())
+	  return 0;
 
 	if (IsPV && alpha < score) {
 searchAsPV:
 	  score = Negamax<IsPV>(nextPos, depth - ONEPLY,
 				ply + 1, nextRepPly,
 				-beta, -alpha).negated();
+	  if (shouldHardStop())
+	    return 0;
 	}
 
 	if (score > bestScore) {
@@ -379,7 +383,7 @@ searchAsPV:
          This ensures we don't lose the best move when we
          exit in the middle of a search.  */
 
-      try {
+      {
 	Position nextPos = pos;
 	nextPos.makeMove(pvMove);
 	m_movelist[m_moveOffset] = pvMove;
@@ -388,6 +392,8 @@ searchAsPV:
 
 	Score score = Negamax<true>(nextPos, depth - ONEPLY,
 				    1, repPly, -beta, -alpha).negated();
+	if (shouldHardStop())
+	  return std::make_tuple(pvMove, alpha, LOWERBOUND);
 
 	/* If we fail low on the first move, we are aspiring and
 	   we should immediately return the fail low so that the
@@ -397,12 +403,6 @@ searchAsPV:
 	  return std::make_tuple(pvMove, alpha, UPPERBOUND);
 
 	alpha = score;
-      } catch (TimeOverToken token) {
-	/* If we did not even have a chance to search the
-	   principal variation, just return alpha. The search
-	   is over anyways and this score won't land in the TT.  */
-
-	return std::make_tuple(pvMove, alpha, LOWERBOUND);
       }
 
       if (alpha >= beta)
@@ -426,36 +426,32 @@ searchAsPV:
 
 	int repPly = move.resetsRule50() ? 1 : -m_moveOffset;
 
-	Score score;
-	try {
-	  /* Null window search. */
-	  score = Negamax<false>(nextPos, depth - ONEPLY,
-				 1, repPly,
-				 (-alpha).boundedAdd(-1),
-				 -alpha).negated();
-	} catch (TimeOverToken token) {
+	/* Null window search. */
+	Score score = Negamax<false>(nextPos, depth - ONEPLY,
+				     1, repPly,
+				     (-alpha).boundedAdd(-1),
+				     -alpha).negated();
 
-	  /* If we run out of time in the midst of searching, we
-	     can fall back to the best move we have searched thus
-	     far as a lower-bound. This is safe because we search
-	     the principal variation search.  */
+	/* If we run out of time in the midst of searching, we
+	   can fall back to the best move we have searched thus
+	   far as a lower-bound. This is safe because we search
+	   the principal variation search.  */
 
+	if (shouldHardStop())
 	  return std::make_tuple(bestMove, alpha, LOWERBOUND);
-	}
 
 	/* If the null window search fails high, we must retry
 	   the search with an open window (or our (a; b) window).  */
 	if (score > alpha) {
-	  try {
-	    score = Negamax<true>(nextPos, depth - ONEPLY,
-				  1, repPly, -beta, -alpha).negated();
-	  } catch (TimeOverToken token) {
-	    /* We failed high in the null window search. This
-	       means that our move was deemed better than the
-	       previous known best move.  */
+	  Score oldScore = score;
+	  score = Negamax<true>(nextPos, depth - ONEPLY,
+				1, repPly, -beta, -alpha).negated();
 
-	    return std::make_tuple(move, score, LOWERBOUND);
-	  }
+	  /* We failed high in the null window search. This
+	     means that our move was deemed better than the
+	     previous known best move.  */
+	  if (shouldHardStop())
+	    return std::make_tuple(move, oldScore, LOWERBOUND);
 
 	  /* Because of search instability, the score might have
 	     dropped below alpha when we re-search.  Test if the
@@ -518,6 +514,8 @@ searchAsPV:
 							bestMove,
 							SCORE_MIN,
 							SCORE_MAX);
+      if (shouldHardStop())
+	return bestMove;
 
       /* Iterative deepening.  */
 
