@@ -17,10 +17,6 @@ This means, for example, that A1 < H1 < A8 < H8.  */
 #include <bit>
 #include <stdint.h>
 
-#ifdef __BMI2__
-#include <x86intrin.h>
-#endif
-
 namespace DSchack {
   typedef uint64_t Bitboard;
 
@@ -109,44 +105,6 @@ namespace DSchack {
   static constexpr int Popcount(Bitboard bits)
   {
     return std::popcount(bits);
-  }
-
-  /** PDEP: parallel bits deposit.
-  @value: value
-  @mask: mask  */
-  static constexpr Bitboard PDEP(Bitboard value, Bitboard mask)
-  {
-#ifdef __BMI2__
-    return _pdep_u64(value, mask);
-#else
-    Bitboard result = 0;
-    for (Bitboard bit = 1; mask; bit += bit) {
-      Bitboard x = PopLS1B(mask);
-      if (value & bit)
-	result |= x;
-    }
-
-    return result;
-#endif
-  }
-
-  /** PEXT: parallel bits extract.
-  @value: value
-  @mask: mask  */
-  static Bitboard PEXT(Bitboard value, Bitboard mask)
-  {
-#ifdef __BMI2__
-    return _pext_u64(value, mask);
-#else
-    Bitboard result = 0;
-    for (Bitboard bit = 1; mask; bit += bit) {
-      Bitboard x = PopLS1B(mask);
-      if (value & x)
-	result |= bit;
-    }
-
-    return result;
-#endif
   }
 
   /** BB: convert an int (BBSquare) to a Bitboard.
