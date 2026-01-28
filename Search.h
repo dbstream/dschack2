@@ -54,6 +54,9 @@ namespace DSchack {
     /* movetime: time for this move specifically, or 0.  */
     int movetime;
 
+    /* nodes: the maximum number of nodes to search, or 0.  */
+    uint64_t nodes;
+
     // Note: time points are milliseconds since some epoch.
 
     /* goTime: the time when the 'go' command was received.  */

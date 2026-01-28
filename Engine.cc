@@ -76,7 +76,8 @@ namespace DSchack {
   }
 
   void Engine::go(int depth, int wtime, int btime, int winc, int binc,
-		  int movetime, int movestogo, bool infinite, bool ponder)
+		  int movetime, int movestogo, int nodes,
+		  bool infinite, bool ponder)
   {
     SearchGlobalState &s = m_internal->searchGlobalState;
 
@@ -96,6 +97,7 @@ namespace DSchack {
     }
     s.movestogo = movestogo;
     s.movetime = movetime;
+    s.nodes = nodes;
     s.softTimeLimit = 0;
     s.hardTimeLimit.store(0, std::memory_order_relaxed);
     s.depthLimit = depth;

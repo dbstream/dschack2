@@ -147,12 +147,14 @@ namespace DSchack {
     @binc: Black's increment in milliseconds.
     @movetime: UCI movetime in milliseconds.
     @movestogo: Number of moves to go in tournament-style TC, or zero.
+    @nodes: The number of nodes to search.
     @infinite: Whether to search until stopped.
     @ponder: Whether to search in ponder mode.
 
     May not be called if there is already a search in progress.  */
     void go(int depth, int wtime, int btime, int winc, int binc,
-	    int movetime, int movestogo, bool infinite, bool ponder);
+	    int movetime, int movestogo, int nodes,
+	    bool infinite, bool ponder);
 
     /** ponderhit: transition the pondering search into a
 	normal search.

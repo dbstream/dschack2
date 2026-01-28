@@ -260,6 +260,11 @@ namespace DSchack {
       m_numNodes++;
       m_numNodesPerS++;
 
+      if (m_pGlobal->nodes && m_numNodes >= m_pGlobal->nodes) {
+	m_pGlobal->stopRequested.store(true, std::memory_order_relaxed);
+	return true;
+      }
+
       // Every 1000 or so nodes, check the current time.
 
       if (m_numNodesPerS & 1023)

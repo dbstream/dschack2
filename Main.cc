@@ -431,6 +431,7 @@ namespace DSchack {
 	BINC,
 	MOVETIME,
 	MOVESTOGO,
+	NODES,
       };
 
       int perft_ = -1;
@@ -441,6 +442,7 @@ namespace DSchack {
       int binc = 0;
       int movetime = 0;
       int movestogo = 0;
+      int nodes = 0;
       bool infinite = false;
       bool ponder = false;
 
@@ -462,6 +464,7 @@ namespace DSchack {
 	  case BINC: binc = value; break;
 	  case MOVETIME: movetime = value; break;
 	  case MOVESTOGO: movestogo = value; break;
+	  case NODES: nodes = value; break;
 	  }
 	}
 
@@ -473,6 +476,7 @@ namespace DSchack {
 	else if (s == "binc") field = BINC;
 	else if (s == "movetime") field = MOVETIME;
 	else if (s == "movestogo") field = MOVESTOGO;
+	else if (s == "nodes") field = NODES;
 	else {
 	  field = NONE;
 	  if (s == "infinite") infinite = true;
@@ -495,7 +499,8 @@ namespace DSchack {
 	gCoutMutex.unlock();
       } else
 	engine.go(depth, wtime, btime, winc, binc,
-		  movetime, movestogo, infinite, ponder);
+		  movetime, movestogo, nodes,
+		  infinite, ponder);
       return;
     }
 
