@@ -163,7 +163,7 @@ namespace DSchack {
     uint64_t m_lastPeriodicInfo;
     int m_maxPlySearched;
     int m_numRootMovesExamined;
-    int m_moveOffset;
+    int m_rootRepPly;
     Move m_movelist[MAX_PLY + 100]; // +100 to leave space for past moves (capped by rule50).
     int m_historyArray[2][64][64];
 
@@ -230,8 +230,8 @@ namespace DSchack {
       int count = 0;
 
       for (int i = ply; i > ply0; i -= 2) {
-	Move move1 = m_movelist[m_moveOffset + i - 1];
-	Move move2 = m_movelist[m_moveOffset + i - 2];
+	Move move1 = m_movelist[99 + i];
+	Move move2 = m_movelist[98 + i];
 	if (!colorBB)
 	  count++;
 	colorBB ^= BB(move1.fromSquare()) ^ BB(move1.toSquare());
@@ -299,10 +299,10 @@ namespace DSchack {
       int numPvMoves = 0;
       if (bestMove) {
 	numPvMoves = 1;
-	m_movelist[m_moveOffset] = bestMove.value();
+	m_movelist[100] = bestMove.value();
 	Position pos = m_pEngine->getPosition();
 	pos.makeMove(bestMove.value());
-	int rep_ply = -m_moveOffset;
+	int rep_ply = m_rootRepPly;
 	if (bestMove.value().resetsRule50())
 	  rep_ply = 1;
 
@@ -314,15 +314,15 @@ namespace DSchack {
 	  std::optional<TTEntry> ttEntry = m_tt->probe(pos);
 	  if (!ttEntry)
 	    break;
-	  m_movelist[m_moveOffset + numPvMoves++] = ttEntry->move;
+	  m_movelist[100 + numPvMoves++] = ttEntry->move;
 	  pos.makeMove(ttEntry->move);
 	  if (ttEntry->move.resetsRule50())
 	    rep_ply = numPvMoves;
 	}
       }
 
-      std::span<Move> pv = std::span<Move>(m_movelist + m_moveOffset,
-					   m_movelist + m_moveOffset + numPvMoves);
+      std::span<Move> pv = std::span<Move>(m_movelist + 100,
+					   m_movelist + 100 + numPvMoves);
       m_pEngine->getCallbacks().score(score, boundType,
 				      depth / ONEPLY,
 				      m_maxPlySearched,
@@ -428,7 +428,7 @@ namespace DSchack {
 
 	Position nextPos = pos;
 	nextPos.makeMove(ttMove);
-	m_movelist[m_moveOffset + ply] = ttMove;
+	m_movelist[100 + ply] = ttMove;
 
 	int nextRepPly = ttMove.resetsRule50() ? ply + 1 : repPly;
 
@@ -488,7 +488,7 @@ skipTTMove:
 
 	Position nextPos = pos;
 	nextPos.makeMove(move);
-	m_movelist[m_moveOffset + ply] = move;
+	m_movelist[100 + ply] = move;
 
 	int nextRepPly = move.resetsRule50() ? ply + 1 : repPly;
 
@@ -572,9 +572,9 @@ searchAsPV:
       try {
 	Position nextPos = pos;
 	nextPos.makeMove(pvMove);
-	m_movelist[m_moveOffset] = pvMove;
+	m_movelist[100] = pvMove;
 
-	int repPly = pvMove.resetsRule50() ? 1 : -m_moveOffset;
+	int repPly = pvMove.resetsRule50() ? 1 : m_rootRepPly;
 
 	Score score = Negamax<true>(nextPos, depth - ONEPLY,
 				    1, repPly, -beta, -alpha).negated();
@@ -612,9 +612,9 @@ searchAsPV:
 
 	Position nextPos = pos;
 	nextPos.makeMove(move);
-	m_movelist[m_moveOffset] = move;
+	m_movelist[100] = move;
 
-	int repPly = move.resetsRule50() ? 1 : -m_moveOffset;
+	int repPly = move.resetsRule50() ? 1 : m_rootRepPly;
 
 	Score score;
 	try {
@@ -684,9 +684,9 @@ searchAsPV:
       m_lastPeriodicInfo = global->goTime;
 
       const std::vector<Move> repMoves = engine->getRepetitionMoves();
-      m_moveOffset = repMoves.size();
-      for (int i = 0; i < m_moveOffset; i++)
-	m_movelist[i] = repMoves[i];
+      m_rootRepPly = -repMoves.size();
+      for (int i = 0; i < (int) repMoves.size(); i++)
+	m_movelist[100 + m_rootRepPly + i] = repMoves[i];
       for (int i = 0; i < 2; i++) {
 	for (int j = 0; j < 64; j++) {
 	  for (int k = 0; k < 64; k++)
