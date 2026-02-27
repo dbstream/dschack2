@@ -103,6 +103,11 @@ namespace DSchack {
       return res;
     }
 
+    constexpr static Move makeNull()
+    {
+      return Move(0, 0, 0, PAWN, PAWN, PAWN);
+    }
+
     constexpr static Move makeRegular(int fromSq, int toSq, PieceType movedPiece)
     {
       return Move(fromSq, toSq, 0, movedPiece, PAWN, PAWN);
@@ -158,6 +163,12 @@ namespace DSchack {
     constexpr PieceType piece() const
     {
       return m_movedPiece;
+    }
+
+    /** isNull: returns true if the move is a null move. */
+    constexpr bool isNull() const
+    {
+      return m_fromSquare == 0 && m_toSquare == 0;
     }
 
     /** isCapture: returns true if the move is a capture. */
@@ -473,6 +484,16 @@ namespace DSchack {
       int kingSq = Sq(pieces(us, KING));
 
       return attackedByOcc(pieces(BOTH, ALL), kingSq, them);
+    }
+
+    constexpr void makeNullMove()
+    {
+      Color us = sideToMove();
+      Color them = (us == WHITE) ? BLACK : WHITE;
+
+      setSideToMove(them);
+      setEnpassantFile(-1);
+      m_rule50++;
     }
 
     constexpr void makeMove(Move move)
