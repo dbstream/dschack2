@@ -102,16 +102,16 @@ namespace DSchack {
   public:
     ~UCIEngineCallbacks() {}
 
-    void score(Score score, BoundType boundType,
+    void score(int score, BoundType boundType,
 	       int depth, int seldepth, uint64_t nodes,
 	       int search_ms, std::span<const Move> pv) override
     {
       gCoutMutex.lock();
       std::cout << "info depth " << depth << " seldepth " << seldepth << " score ";
-      if (score.isCheckmate())
-	std::cout << "mate " << score.depthToMate();
+      if (IsDecisive(score))
+	std::cout << "mate " << DepthToMate(score);
       else
-	std::cout << "cp " << score.centipawns();
+	std::cout << "cp " << score;
       if (boundType != EXACT)
 	std::cout << ((boundType == LOWERBOUND) ? " lowerbound" : " upperbound");
       std::cout << " nodes " << nodes << " time " << search_ms;

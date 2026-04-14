@@ -9,5 +9,5 @@
 #include "Score.h"
 
 namespace DSchack {
-  Score Evaluate(const Position &pos);
+  int Evaluate(const Position &pos);
 } // namespace DSchack

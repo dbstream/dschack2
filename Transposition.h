@@ -42,7 +42,7 @@ namespace DSchack {
 
   struct TTEntry {
     Move move;
-    Score score = 0;
+    int score = 0;
     BoundType boundType;
     int depth;
   };
@@ -64,9 +64,9 @@ namespace DSchack {
 
     int hashfull();
 
-    std::optional<TTEntry> probe(const Position &pos);
+    std::optional<TTEntry> probe(const Position &pos, int ply);
 
-    void insert(const Position &pos, Move move, Score score,
-		BoundType boundType, int depth);
+    void insert(const Position &pos, Move move, int score,
+		BoundType boundType, int depth, int ply);
   };
 } // namespace DSchack

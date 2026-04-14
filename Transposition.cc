@@ -59,7 +59,7 @@ namespace DSchack {
     return (1000 * m_numFull) / m_numEntries;
   }
 
-  std::optional<TTEntry> TranspositionTable::probe(const Position &pos)
+  std::optional<TTEntry> TranspositionTable::probe(const Position &pos, int ply)
   {
     uint64_t key = pos.hash();
     if (!key)
@@ -81,19 +81,49 @@ namespace DSchack {
 
     TTEntry e;
     e.move = move.value();
-    e.score = Score(enc.score);
+    e.score = enc.score;
     e.boundType = static_cast<BoundType>(enc.flags & 3);
     e.depth = enc.depth;
+
+    /* Adjust mate scores from depth-to-mate from root to
+       depth-to-mate from transposition node. Additionally,
+       set the score to the lowest or highest nondecisive
+       score if depth-to-mate is greater than 100 - rule50.  */
+    if (IsDecisive(e.score)) {
+      if (e.score < 0 && e.boundType != LOWERBOUND) {
+	if (-DepthToMate(e.score) >= (100 - pos.rule50())) {
+	  e.score = SCORE_MIN_NON_DECISIVE;
+	  e.boundType = UPPERBOUND;
+	} else
+	  e.score += ply;
+      } else if (e.score > 0 && e.boundType != UPPERBOUND) {
+	if (DepthToMate(e.score) >= (100 - pos.rule50())) {
+	  e.score = SCORE_MAX_NON_DECISIVE;
+	  e.boundType = LOWERBOUND;
+	} else
+	  e.score -= ply;
+      }
+    }
+
     return e;
   }
 
-  void TranspositionTable::insert(const Position &pos, Move move, Score score,
-				  BoundType boundType, int depth)
+  void TranspositionTable::insert(const Position &pos, Move move, int score,
+				  BoundType boundType, int depth, int ply)
   {
     TTEntryEncoded enc;
     enc.key = pos.hash();
     if (!enc.key)
       return;
+
+    /* Adjust mate scores from depth-to-mate from root to
+       depth-to-mate from transposition node.  */
+    if (IsDecisive(score)) {
+      if (score < 0)
+	score -= ply;
+      else
+	score += ply;
+    }
 
     enc.move = move.fromSquare() | (move.toSquare() << 6);
     if (move.isPromotion()) {
@@ -105,7 +135,7 @@ namespace DSchack {
       default: __builtin_unreachable();
       }
     }
-    enc.score = score.asTTScore().m_value;
+    enc.score = score;
     enc.flags = static_cast<uint16_t>(boundType);
     enc.depth = depth;
 

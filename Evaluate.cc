@@ -144,7 +144,7 @@ namespace DSchack {
     KING
   };
 
-  Score Evaluate(const Position &pos)
+  int Evaluate(const Position &pos)
   {
     int phase = 0;
     int score_mg = 0;

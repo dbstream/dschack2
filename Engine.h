@@ -38,7 +38,7 @@ namespace DSchack {
     protocol is UCI:
       info depth 5
       info score cp -32 depth 5 nodes 12345 time 1023 pv f2f3 e7e5 g2g4 ... */
-    virtual void score(Score score, BoundType boundType,
+    virtual void score(int score, BoundType boundType,
 		       int depth, int seldepth, uint64_t nodes,
 		       int search_ms, std::span<const Move> pv) = 0;
 

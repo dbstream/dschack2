@@ -293,7 +293,7 @@ namespace DSchack {
       return false;
     }
 
-    void sendScoreAndPV(Score score, BoundType boundType,
+    void sendScoreAndPV(int score, BoundType boundType,
 			int depth, std::optional<Move> bestMove)
     {
       int numPvMoves = 0;
@@ -311,7 +311,7 @@ namespace DSchack {
 	    break;
 	  if (detectRepetition(rep_ply, numPvMoves))
 	    break;
-	  std::optional<TTEntry> ttEntry = m_tt->probe(pos);
+	  std::optional<TTEntry> ttEntry = m_tt->probe(pos, numPvMoves);
 	  if (!ttEntry)
 	    break;
 	  m_movelist[100 + numPvMoves++] = ttEntry->move;
@@ -336,7 +336,7 @@ namespace DSchack {
       Position pos = m_pEngine->getPosition();
       pos.makeMove(prevBestMove);
 
-      std::optional<TTEntry> ttEntry = m_tt->probe(pos);
+      std::optional<TTEntry> ttEntry = m_tt->probe(pos, 1);
       if (ttEntry)
 	return ttEntry->move;
       else
@@ -344,16 +344,21 @@ namespace DSchack {
     }
 
     template<bool IsPV>
-    Score Negamax(const Position &pos,
-		  int depth,
-		  int ply, int repPly,
-		  Score alpha, Score beta)
+    int Negamax(const Position &pos,
+		int depth,
+		int ply, int repPly,
+		int alpha, int beta)
     {
       if (pos.rule50() >= 100)
-	return Score(0);
+	return 0;
 
       if (detectRepetition(repPly, ply))
-	return Score(0);
+	return 0;
+
+      if (MateIn(ply + 1) <= alpha)
+	return alpha;
+      if (MatedIn(ply) >= beta)
+	return beta;
 
       if (incrementNodes())
 	throw TimeOverToken();
@@ -372,7 +377,7 @@ namespace DSchack {
       if (pos.inCheck())
 	depth += ONEPLY;
 
-      Score bestScore(SCORE_MIN);
+      int bestScore = SCORE_MIN;
       Move bestMove;
 
       bool raisedAlpha = false;
@@ -381,7 +386,7 @@ namespace DSchack {
       /* Probe the transposition table.  */
 
       Move ttMove;
-      std::optional<TTEntry> tt = m_tt->probe(pos);
+      std::optional<TTEntry> tt = m_tt->probe(pos, ply);
 
       if (tt) {
 	m_stat.ttHits++;
@@ -395,7 +400,7 @@ namespace DSchack {
 
 	   If the bound if exact and we are in a PV node,
 	   only cutoff if we are quiescing.  */
-	if (tt->depth >= depth) {
+	if (tt->depth >= depth || IsDecisive(tt->score)) {
 	  m_stat.ttDeep++;
 	  switch(tt->boundType) {
 	  case LOWERBOUND:
@@ -432,9 +437,9 @@ namespace DSchack {
 
 	int nextRepPly = ttMove.resetsRule50() ? ply + 1 : repPly;
 
-	Score score = Negamax<IsPV>(nextPos, depth - ONEPLY,
-				    ply + 1, nextRepPly,
-				    -beta, -alpha).negated();
+	int score = -Negamax<IsPV>(nextPos, depth - ONEPLY,
+				   ply + 1, nextRepPly,
+				   -beta, -alpha);
 
 	numMovesSearched++;
 
@@ -447,7 +452,7 @@ namespace DSchack {
 	  if (score >= beta) {
 	    m_stat.betaCutoffDistribution[0]++;
 	    m_stat.ttSearchCutoffs++;
-	    m_tt->insert(pos, ttMove, beta, LOWERBOUND, depth);
+	    m_tt->insert(pos, ttMove, beta, LOWERBOUND, depth, ply);
 	    return score;
 	  }
 	} else
@@ -456,7 +461,7 @@ namespace DSchack {
 	m_stat.ttMisses++;
 
 skipTTMove:
-      Score standingPatScore(SCORE_MIN);
+      int standingPatScore = SCORE_MIN;
 
       /* If we are in quiescence search, ensure we have a
 	 standing-pat score.  */
@@ -492,7 +497,7 @@ skipTTMove:
 
 	int nextRepPly = move.resetsRule50() ? ply + 1 : repPly;
 
-	Score score;
+	int score;
 
 	if (!raisedAlpha || depth <= 0)
 	  goto searchAsPV;
@@ -504,17 +509,17 @@ skipTTMove:
 
 	   We avoid NWS in quiescence search.  */
 
-	score = Negamax<false>(nextPos, depth - ONEPLY,
-			       ply + 1, nextRepPly,
-			       (-alpha).boundedAdd(-1),
-			       -alpha).negated();
+	score = -Negamax<false>(nextPos, depth - ONEPLY,
+				ply + 1, nextRepPly,
+				-alpha - 1,
+				-alpha);
 
 	if (IsPV && alpha < score) {
 	  m_stat.numPVSResearch++;
 searchAsPV:
-	  score = Negamax<IsPV>(nextPos, depth - ONEPLY,
-				ply + 1, nextRepPly,
-				-beta, -alpha).negated();
+	  score = -Negamax<IsPV>(nextPos, depth - ONEPLY,
+				 ply + 1, nextRepPly,
+				 -beta, -alpha);
 	}
 
 	if (score > bestScore) {
@@ -529,7 +534,7 @@ searchAsPV:
 	    /* Beta cutoff.  */
 	    m_stat.betaCutoffDistribution[numMovesSearched]++;
 	    mp.betaCutoff(depth);
-	    m_tt->insert(pos, move, beta, LOWERBOUND, depth);
+	    m_tt->insert(pos, move, beta, LOWERBOUND, depth, ply);
 	    return score;
 	  }
 	}
@@ -539,9 +544,9 @@ searchAsPV:
 
       if (bestScore == SCORE_MIN) {
 	if (pos.inCheck())
-	  return CHECKMATE_SCORE;
+	  return MatedIn(ply);
 	else
-	  return Score(0);
+	  return 0;
       }
 
       /* We cannot insert into the transposition table if we
@@ -550,7 +555,7 @@ searchAsPV:
       if (bestScore != standingPatScore)
 	m_tt->insert(pos, bestMove, bestScore,
 		     raisedAlpha ? EXACT : UPPERBOUND,
-		     depth);
+		     depth, ply);
 
       if (!raisedAlpha)
 	m_stat.numAllNodes++;
@@ -558,8 +563,8 @@ searchAsPV:
       return bestScore;
     }
 
-    std::tuple<Move, Score, BoundType> SearchRoot(int depth, Move pvMove,
-						  Score alpha, Score beta)
+    std::tuple<Move, int, BoundType> SearchRoot(int depth, Move pvMove,
+						int alpha, int beta)
     {
       const Position &pos = m_pEngine->getPosition();
       m_maxPlySearched = 0;
@@ -576,8 +581,8 @@ searchAsPV:
 
 	int repPly = pvMove.resetsRule50() ? 1 : m_rootRepPly;
 
-	Score score = Negamax<true>(nextPos, depth - ONEPLY,
-				    1, repPly, -beta, -alpha).negated();
+	int score = -Negamax<true>(nextPos, depth - ONEPLY,
+				   1, repPly, -beta, -alpha);
 
 	/* If we fail low on the first move, we are aspiring and
 	   we should immediately return the fail low so that the
@@ -616,13 +621,13 @@ searchAsPV:
 
 	int repPly = move.resetsRule50() ? 1 : m_rootRepPly;
 
-	Score score;
+	int score;
 	try {
 	  /* Null window search. */
-	  score = Negamax<false>(nextPos, depth - ONEPLY,
-				 1, repPly,
-				 (-alpha).boundedAdd(-1),
-				 -alpha).negated();
+	  score = -Negamax<false>(nextPos, depth - ONEPLY,
+				  1, repPly,
+				  -alpha - 1,
+				  -alpha);
 	} catch (TimeOverToken token) {
 
 	  /* If we run out of time in the midst of searching, we
@@ -637,8 +642,8 @@ searchAsPV:
 	   the search with an open window (or our (a; b) window).  */
 	if (score > alpha) {
 	  try {
-	    score = Negamax<true>(nextPos, depth - ONEPLY,
-				  1, repPly, -beta, -alpha).negated();
+	    score = -Negamax<true>(nextPos, depth - ONEPLY,
+				   1, repPly, -beta, -alpha);
 	  } catch (TimeOverToken token) {
 	    /* We failed high in the null window search. This
 	       means that our move was deemed better than the
@@ -712,7 +717,7 @@ searchAsPV:
       /* Start out with any random move as the PV.  */
       Move bestMove = legalMoves[0];
 
-      Score score;
+      int score;
       BoundType boundType;
 
       /* Perform an initial fixed-depth search to get a
@@ -736,21 +741,26 @@ searchAsPV:
 	/* If we have found a checkmate (for us or for the
 	   opponent), exit the search immediately.  */
 
-	if (score.isCheckmate())
+	if (IsDecisive(score))
 	  break;
 
 	/* Perform an aspirated search with a fixed window of
 	   20 centipawns, on the assumption that the score
 	   doesn't change much with each iteration.  */
 
-	Score alpha = score.boundedAdd(-20);
-	Score beta = score.boundedAdd(20);
+	int alpha = score - 20;
+	int beta = score + 20;
+
+	if (SCORE_MIN > alpha)
+	  alpha = SCORE_MIN;
+	if (SCORE_MAX < beta)
+	  beta = SCORE_MAX;
 
 	std::tie(bestMove, score, boundType) = SearchRoot(searchDepth,
 							  bestMove,
 							  alpha, beta);
 
-	if (boundType != LOWERBOUND || !score.isCheckmate())
+	if (boundType != LOWERBOUND || !IsDecisive(score))
 	  sendScoreAndPV(score, boundType, searchDepth, bestMove);
 
 	if (score <= alpha || beta <= score) {
@@ -765,7 +775,7 @@ searchAsPV:
 							    SCORE_MIN,
 							    SCORE_MAX);
 
-	  if (boundType != LOWERBOUND || !score.isCheckmate())
+	  if (boundType != LOWERBOUND || !IsDecisive(score))
 	    sendScoreAndPV(score, boundType, searchDepth, bestMove);
 	}
 
