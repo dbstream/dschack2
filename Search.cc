@@ -372,6 +372,10 @@ namespace DSchack {
       if (depth < 0)
 	depth = 0;
 
+      bool hasBestMove = false;
+
+      int standingPatScore = Evaluate(pos);
+
       /* Check extension: search deeper if we are in check.  */
 
       if (pos.inCheck())
@@ -382,6 +386,17 @@ namespace DSchack {
 
       bool raisedAlpha = false;
       int numMovesSearched = 0;
+
+      if (depth <= 0) {
+	bestScore = standingPatScore;
+	if (bestScore > alpha) {
+	  alpha = bestScore;
+	  raisedAlpha = true;
+
+	  if (alpha >= beta)
+	    return alpha;
+	}
+      }
 
       /* Probe the transposition table.  */
 
@@ -443,8 +458,11 @@ namespace DSchack {
 
 	numMovesSearched++;
 
-	bestScore = score;
-	bestMove = ttMove;
+	if (score > bestScore) {
+	  bestScore = score;
+	  bestMove = ttMove;
+	  hasBestMove = true;
+	}
 
 	if (score > alpha) {
 	  raisedAlpha = true;
@@ -461,25 +479,6 @@ namespace DSchack {
 	m_stat.ttMisses++;
 
 skipTTMove:
-      int standingPatScore = SCORE_MIN;
-
-      /* If we are in quiescence search, ensure we have a
-	 standing-pat score.  */
-      if (depth <= 0) {
-	standingPatScore = Evaluate(pos);
-
-	if (standingPatScore > bestScore)
-	  bestScore = standingPatScore;
-
-	if (standingPatScore > alpha) {
-	  raisedAlpha = true;
-	  alpha = standingPatScore;
-	}
-
-	if (standingPatScore >= beta)
-	  return standingPatScore;
-      }
-
       /* Now search all other moves.  */
 
       MovePicker mp(pos, m_historyArray[ply & 1], depth <= 0);
@@ -525,6 +524,7 @@ searchAsPV:
 	if (score > bestScore) {
 	  bestScore = score;
 	  bestMove = move;
+	  hasBestMove = true;
 	}
 
 	if (score > alpha) {
@@ -552,7 +552,7 @@ searchAsPV:
       /* We cannot insert into the transposition table if we
 	 lack a bestMove (e.g. if quiescence search ends up
 	 with the standing-pat score).  */
-      if (bestScore != standingPatScore)
+      if (hasBestMove)
 	m_tt->insert(pos, bestMove, bestScore,
 		     raisedAlpha ? EXACT : UPPERBOUND,
 		     depth, ply);
