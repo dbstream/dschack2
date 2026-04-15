@@ -377,9 +377,16 @@ namespace DSchack {
       int standingPatScore = Evaluate(pos);
 
       /* Check extension: search deeper if we are in check.  */
-
       if (pos.inCheck())
 	depth += ONEPLY;
+      else if (!IsPV) {
+	/* Reverse Futility Pruning: in non-PV nodes, if standing pat
+	   beats beta by a wide enough margin, prune.  */
+	int margin = 150 * depth / ONEPLY;
+
+	if (standingPatScore >= beta + margin)
+	  return standingPatScore;
+      }
 
       int bestScore = SCORE_MIN;
       Move bestMove;
