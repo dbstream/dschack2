@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /* Search routine.
 
-   Copyright (C) 2026 David Bergström  */
+   Copyright (C) 2026 David Bergström
+
+   2026-04-27: Rewritten to use an explicit search stack; the old search
+               routine was becoming difficult to maintain.  */
 
 #include <array>
 #include <algorithm>
@@ -17,49 +20,21 @@
 #include "Transposition.h"
 
 namespace DSchack {
-  struct SearchStatistics {
-    int numAllNodes = 0;
-    int ttMisses = 0;
-    int ttHits = 0;
-    int ttDeep = 0;
-    int ttCutoffs = 0;
-    int ttSearchCutoffs = 0;
-    int ttFailLow = 0;
-    int numPVSResearch = 0;
-    int betaCutoffDistribution[300] = { 0 };
+  static constexpr int MAX_PLY = 100; // This is the deepest the engine can search
 
-    void show(EngineCallbacks &cb)
-    {
-      std::stringstream ss;
+  struct TimeOverToken {}; // A dummy struct which is thrown when the search timeouts
 
-      ss << "Search statistics:\n";
-      ss << "  numAllNodes=" << numAllNodes << "\n";
-      ss << "  ttHits=" << ttHits << "\n";
-      ss << "  ttMisses=" << ttMisses << "\n";
-      ss << "  ttDeep=" << ttDeep << "\n";
-      ss << "  ttCutoffs=" << ttCutoffs << "\n";
-      ss << "  ttSearchCutoffs=" << ttSearchCutoffs << "\n";
-      ss << "  ttFailLow=" << ttFailLow << "\n";
-      ss << "  numPVSResearch=" << numPVSResearch << "\n";
-      ss << "  betaCutoffDistribution=";
-      int m = 0;
-      for (int i = 0; i < 300; i++) {
-	if (betaCutoffDistribution[i])
-	  m = i + 1;
-      }
-      for (int i = 0; i < m; i++)
-	ss << " " << betaCutoffDistribution[i];
-      ss << "\n";
-
-      cb.info(ss.view());
-    }
+  struct Node {
+    int ply;
+    int staticEval;
+    bool inCheck;
+    Move currentMove;
+    std::optional<Move> ttMove;
+    Node *repNode;
+    Position pos;
   };
 
   static constexpr int MAX_HISTORY = 10000;
-
-  static constexpr int ONEPLY = 16;
-
-  struct TimeOverToken {};
 
   static constexpr void updateHistory(int &location, int bonus)
   {
@@ -76,27 +51,37 @@ namespace DSchack {
   static thread_local Move mp_moves_buffer[10000];
   static thread_local Move *mp_moves_end = mp_moves_buffer;
 
+  struct MoveHistory {
+    int quietHistory[64][64] {};
+
+    int quiet(Move move)
+    {
+      return quietHistory[move.fromSquare()][move.toSquare()];
+    }
+
+    void pushQuiet(Move move, int bonus)
+    {
+      updateHistory(quietHistory[move.fromSquare()][move.toSquare()], bonus);
+    }
+  };
+
   class MovePicker {
     Move *m_prevEnd = mp_moves_end;
+    Move *m_current = mp_moves_end;
+    Move *m_end = mp_moves_end;
+    Move *m_firstQuiet = nullptr;
     int m_phase = 0;
-    int m_endPhase;
-
-    Move *m_current = nullptr;
-    Move *m_end = nullptr;
 
     const Position &m_pos;
 
-    int (&m_historyArray)[64][64];
+    bool m_skipQuiets;
+
+    MoveHistory &m_history;
 
   public:
-    MovePicker(const Position &pos, int (&historyArray)[64][64], bool quiescence = false)
-      : m_pos(pos), m_historyArray(historyArray)
-    {
-      if (quiescence)
-	m_endPhase = 2;
-      else
-	m_endPhase = 3;
-    }
+    MovePicker(const Position &pos, bool skipQuiets, MoveHistory &history)
+      : m_pos(pos), m_skipQuiets(skipQuiets), m_history(history)
+    {}
 
     ~MovePicker()
     {
@@ -106,13 +91,9 @@ namespace DSchack {
     std::optional<Move> nextMove()
     {
       while (m_current == m_end) {
-	m_phase++;
-	if (m_phase == m_endPhase)
-	  return std::nullopt;
-
-	m_current = m_prevEnd;
-	if (m_phase == 1) {
-	  m_end = GenerateCaptures(m_pos, m_current);
+	switch(m_phase++) {
+	case 0:
+	  mp_moves_end = m_end = GenerateCaptures(m_pos, m_end);
 	  std::sort(m_current, m_end, [](Move lhs, Move rhs){
 	    if (lhs.capture() > rhs.capture())
 	      return true;
@@ -120,39 +101,37 @@ namespace DSchack {
 	      return false;
 	    return lhs.piece() < rhs.piece();
 	  });
-	} else {
-	  m_end = GenerateQuiets(m_pos, m_current);
-	  std::sort(m_current, m_end, [this](Move lhs, Move rhs){
-	    return m_historyArray[lhs.fromSquare()][lhs.toSquare()]
-	         > m_historyArray[rhs.fromSquare()][rhs.toSquare()];
-	  });
+	  break;
+	case 1:
+	  if (!m_skipQuiets) {
+	    m_firstQuiet = m_end;
+	    mp_moves_end = m_end = GenerateQuiets(m_pos, m_end);
+	    std::sort(m_current, m_end, [this](Move lhs, Move rhs){
+	      return m_history.quiet(lhs) > m_history.quiet(rhs);
+	    });
+	  }
+	  break;
+	default:
+	  return std::nullopt;
 	}
-	mp_moves_end = m_end;
       }
 
       return *(m_current++);
     }
 
-    void betaCutoff(int depth)
+    void betaCutoff(int bonus, int malus)
     {
-      if (m_phase != 2 || depth < ONEPLY)
-	return;
+      Move *p = m_firstQuiet;
+      if (p) {
+	while (p != m_current - 1) {
+	  m_history.pushQuiet(*p, -malus);
+	  p++;
+	}
 
-      int historyBonus = (300 * depth) / ONEPLY - 250;
-
-      Move *pMove = m_current - 1;
-      updateHistory(m_historyArray[pMove->fromSquare()][pMove->toSquare()],
-		    historyBonus);
-
-      while (pMove != m_prevEnd) {
-	pMove--;
-	updateHistory(m_historyArray[pMove->fromSquare()][pMove->toSquare()],
-		      -historyBonus);
+	m_history.pushQuiet(*p, bonus);
       }
     }
   };
-
-  static constexpr int MAX_PLY = 100;
 
   class Searcher {
     Engine *m_pEngine;
@@ -162,13 +141,43 @@ namespace DSchack {
     uint64_t m_numNodesPerS = 0;
     uint64_t m_lastPeriodicInfo;
     int m_maxPlySearched;
-    int m_numRootMovesExamined;
-    int m_rootRepPly;
-    Move m_movelist[MAX_PLY + 100]; // +100 to leave space for past moves (capped by rule50).
-    int m_historyArray[2][64][64];
 
-    SearchStatistics m_stat;
+    MoveHistory m_moveHistory[2];
 
+    Node m_nodes[101 + MAX_PLY]; // +100 plies for 50-moves rule.
+    Node *m_rootRepNode;
+
+    Move m_bestRootMove;
+    bool m_rootIsLowerBound = false;
+
+public:
+    Searcher(Engine *engine, SearchGlobalState *global,
+	     TranspositionTable *tt)
+    {
+      m_pEngine = engine;
+      m_pGlobal = global;
+      m_tt = tt;
+      m_lastPeriodicInfo = global->goTime;
+
+      const std::vector<Move> repMoves = engine->getRepetitionMoves();
+      m_rootRepNode = m_nodes + 100 - repMoves.size();
+      for (int i = 0; i < (int) repMoves.size(); i++)
+	m_rootRepNode[i].currentMove = repMoves[i];
+
+      for (int i = 0; i < MAX_PLY + 1; i++)
+	m_nodes[100 + i].ply = i;
+
+      m_nodes[100].repNode = m_rootRepNode;
+      m_nodes[100].pos = engine->getPosition();
+
+      int staticEval = Evaluate(m_nodes[100].pos);
+      for (int i = 0; i < 100; i += 2) {
+	m_nodes[i].staticEval = staticEval;
+	m_nodes[i + 1].staticEval = -staticEval;
+      }
+    }
+
+private:
     bool pondering()
     {
       return m_pGlobal->ponder.load(std::memory_order_acquire);
@@ -207,31 +216,26 @@ namespace DSchack {
     {
       if (!pondering() && !m_pGlobal->infinite) {
 	uint64_t limit = m_pGlobal->softTimeLimit;
-	if (limit && CurrentTime() >= limit) {
+	if (limit && CurrentTime() >= limit)
 	  return true;
-	}
       }
 
       return false;
     }
 
-    /** detectRepetition: detect repetition of a position.
-    @ply0: the ply after the last rule50-breaking move was made.
-    @ply: the current ply.  */
-    bool detectRepetition(int ply0, int ply)
+    bool detectRepetition(Node *now, Node *begin)
     {
-      if ((ply0 & 1) != (ply & 1))
-	ply0++;
+      if ((now - begin) & 1)
+	begin++;
 
       Bitboard colorBB = 0;
-      Bitboard pieceBB[6];
-      for (int i = 0; i < 6; i++)
-	pieceBB[i] = 0;
+      Bitboard pieceBB[6] {};
       int count = 0;
 
-      for (int i = ply; i > ply0; i -= 2) {
-	Move move1 = m_movelist[99 + i];
-	Move move2 = m_movelist[98 + i];
+      while (now != begin) {
+	Move move1 = (now - 1)->currentMove;
+	Move move2 = (now - 2)->currentMove;
+	now -= 2;
 	if (!colorBB)
 	  count++;
 	colorBB ^= BB(move1.fromSquare()) ^ BB(move1.toSquare());
@@ -254,7 +258,6 @@ namespace DSchack {
       return false;
     }
 
-    // Increment numNodes and potentially change shouldHardStop.
     bool incrementNodes()
     {
       m_numNodes++;
@@ -275,7 +278,6 @@ namespace DSchack {
 
       uint64_t t = CurrentTime();
 
-      // Try to print nps once per second.
       int elapsed = t - m_lastPeriodicInfo;
       if (elapsed >= 1000) {
 	m_pEngine->getCallbacks().nps(1000 * m_numNodesPerS / elapsed,
@@ -296,36 +298,32 @@ namespace DSchack {
     void sendScoreAndPV(int score, BoundType boundType,
 			int depth, std::optional<Move> bestMove)
     {
+      Move moves[MAX_PLY];
       int numPvMoves = 0;
       if (bestMove) {
+	moves[0] = bestMove.value();
 	numPvMoves = 1;
-	m_movelist[100] = bestMove.value();
-	Position pos = m_pEngine->getPosition();
-	pos.makeMove(bestMove.value());
-	int rep_ply = m_rootRepPly;
-	if (bestMove.value().resetsRule50())
-	  rep_ply = 1;
-
+	Node *n = makeMove(m_nodes + 100, bestMove.value());
 	while (numPvMoves < MAX_PLY) {
+	  const Position &pos = n->pos;
 	  if (pos.rule50() >= 100)
 	    break;
-	  if (detectRepetition(rep_ply, numPvMoves))
+	  if (detectRepetition(n, n->repNode))
 	    break;
 	  std::optional<TTEntry> ttEntry = m_tt->probe(pos, numPvMoves);
 	  if (!ttEntry)
 	    break;
-	  m_movelist[100 + numPvMoves++] = ttEntry->move;
-	  pos.makeMove(ttEntry->move);
-	  if (ttEntry->move.resetsRule50())
-	    rep_ply = numPvMoves;
+	  moves[numPvMoves++] = ttEntry->move;
+	  n = makeMove(n, ttEntry->move);
 	}
+
+	for (int i = 0; i < numPvMoves; i++)
+	  moves[i] = m_nodes[100 + i].currentMove;
       }
 
-      std::span<Move> pv = std::span<Move>(m_movelist + 100,
-					   m_movelist + 100 + numPvMoves);
+      std::span<Move> pv = std::span<Move>(moves, moves + numPvMoves);
       m_pEngine->getCallbacks().score(score, boundType,
-				      depth / ONEPLY,
-				      m_maxPlySearched,
+				      depth, m_maxPlySearched,
 				      m_numNodes,
 				      CurrentTime() - m_pGlobal->goTime,
 				      pv);
@@ -343,20 +341,40 @@ namespace DSchack {
 	return std::nullopt;
     }
 
-    template<bool IsPV>
-    int Negamax(const Position &pos,
-		int depth,
-		int ply, int repPly,
-		int alpha, int beta)
+    Node *makeMove(Node *current, Move move)
     {
+      Node *next = current + 1;
+
+      current->currentMove = move;
+      next->pos = current->pos;
+      next->pos.makeMove(move);
+      next->ttMove = std::nullopt;
+
+      if (move.resetsRule50())
+	next->repNode = next;
+      else
+	next->repNode = current->repNode;
+
+      return next;
+    }
+
+    /* Quiescence search routine. */
+    int qsearch(Node *n, int alpha, int beta)
+    {
+      const Position &pos = n->pos;
+      int ply = n->ply;
+
       if (pos.rule50() >= 100)
 	return 0;
-
-      if (detectRepetition(repPly, ply))
+      if (detectRepetition(n, n->repNode))
 	return 0;
 
+      /* Mate Distance Pruning: we cannot possibly achieve a
+	 better checkmate score than alpha, therefore prune
+         this branch immediately. (and the same for beta)  */
       if (MateIn(ply + 1) <= alpha)
 	return alpha;
+
       if (MatedIn(ply) >= beta)
 	return beta;
 
@@ -366,396 +384,353 @@ namespace DSchack {
       if (ply > m_maxPlySearched)
 	m_maxPlySearched = ply;
 
+      int staticEval = Evaluate(pos);
+
       if (ply >= MAX_PLY)
-	return Evaluate(pos);
+	return staticEval;
 
-      if (depth < 0)
-	depth = 0;
-
-      bool hasBestMove = false;
-
-      int standingPatScore = Evaluate(pos);
       bool inCheck = pos.inCheck();
+      n->staticEval = staticEval;
+      n->inCheck = inCheck;
 
-      /* Check extension: search deeper if we are in check.  */
-      if (inCheck)
-	depth += ONEPLY;
-      else if (!IsPV) {
-	/* Reverse Futility Pruning: in non-PV nodes, if standing pat
-	   beats beta by a wide enough margin, prune.  */
-	int margin = 150 * depth / ONEPLY;
+      if (staticEval >= beta && !inCheck)
+	return staticEval;
 
-	if (standingPatScore >= beta + margin)
-	  return standingPatScore;
-      }
-
-      int bestScore = SCORE_MIN;
+      int bestScore = inCheck ? MatedIn(ply) : staticEval;
       Move bestMove;
-
+      bool hasBestMove = false;
       bool raisedAlpha = false;
-      int numMovesSearched = 0;
 
-      if (depth <= 0) {
-	bestScore = standingPatScore;
-	if (bestScore > alpha) {
-	  alpha = bestScore;
-	  raisedAlpha = true;
-
-	  if (alpha >= beta)
-	    return alpha;
-	}
-      }
-
-      /* Probe the transposition table.  */
+      if (!inCheck && staticEval > alpha)
+	alpha = staticEval;
 
       Move ttMove;
       std::optional<TTEntry> tt = m_tt->probe(pos, ply);
-
       if (tt) {
-	m_stat.ttHits++;
+	n->ttMove = ttMove = tt->move;
 
-	ttMove = tt->move;
+	/* In Quiescence search, the score from the transposition
+	   table will always be searched at a depth greater than or
+	   equal to quiescence.  */
 
-	/* Transposition table cutoffs: if the TT depth is
-	   greater than or equal than our depth, cutoff if
-	   the score is a lowerbound and above beta or an
-	   upperbound and below alpha.
+	switch(tt->boundType) {
+	case LOWERBOUND:
+	  if (tt->score >= beta)
+	    return tt->score;
+	  break;
+	case UPPERBOUND:
+	  if (tt->score <= alpha)
+	    return tt->score;
+	  break;
+	default:
+	  return tt->score;
+	}
 
-	   If the bound if exact and we are in a PV node,
-	   only cutoff if we are quiescing.  */
-	if (tt->depth >= depth || IsDecisive(tt->score)) {
-	  m_stat.ttDeep++;
-	  switch(tt->boundType) {
-	  case LOWERBOUND:
-	    if (tt->score >= beta) {
-	      m_stat.ttCutoffs++;
-	      return tt->score;
+	/* Only search the TT move if it is a capture or we are in check.  */
+	if (ttMove.isCapture() || inCheck) {
+	  /* Search the TT move first.  */
+	  Node *next = makeMove(n, ttMove);
+	  int score = -qsearch(next, -beta, -alpha);
+	  if (score > bestScore) {
+	    bestScore = score;
+	    bestMove = ttMove;
+	    hasBestMove = true;
+
+	    if (score >= beta) {
+	      m_tt->insert(pos, ttMove, beta, LOWERBOUND, 0, ply);
+	      return score;
 	    }
-	    break;
-	  case UPPERBOUND:
-	    if (tt->score <= alpha) {
-	      m_stat.numAllNodes++;
-	      m_stat.ttCutoffs++;
-	      return tt->score;
-	    }
-	    break;
-	  default:
-	    if (!IsPV || depth <= 0) {
-	      m_stat.ttCutoffs++;
-	      return tt->score;
+
+	    if (score > alpha) {
+	      raisedAlpha = true;
+	      alpha = score;
 	    }
 	  }
 	}
+      }
 
-	/* In quiescence search, don't search the hash
-	   move if it is not a capture.  */
-	if (depth <= 0 && !ttMove.isCapture())
-	  goto skipTTMove;
-
-	/* Search the hash move first.  */
-
-	Position nextPos = pos;
-	nextPos.makeMove(ttMove);
-	m_movelist[100 + ply] = ttMove;
-
-	int nextRepPly = ttMove.resetsRule50() ? ply + 1 : repPly;
-
-	int score = -Negamax<IsPV>(nextPos, depth - ONEPLY,
-				   ply + 1, nextRepPly,
-				   -beta, -alpha);
-
-	numMovesSearched++;
-
-	if (score > bestScore) {
-	  bestScore = score;
-	  bestMove = ttMove;
-	  hasBestMove = true;
-	}
-
-	if (score > alpha) {
-	  raisedAlpha = true;
-	  alpha = score;
-	  if (score >= beta) {
-	    m_stat.betaCutoffDistribution[0]++;
-	    m_stat.ttSearchCutoffs++;
-	    m_tt->insert(pos, ttMove, beta, LOWERBOUND, depth, ply);
-	    return score;
-	  }
-	} else
-	  m_stat.ttFailLow++;
-      } else
-	m_stat.ttMisses++;
-
-skipTTMove:
-      /* Now search all other moves.  */
-
-      MovePicker mp(pos, m_historyArray[ply & 1], depth <= 0);
+      MovePicker mp(pos, !inCheck, m_moveHistory[ply & 1]);
       while (std::optional<Move> optMove = mp.nextMove()) {
 	Move move = optMove.value();
 
-	/* Skip the TT move, since we already searched
-	   that one.  */
 	if (move.sameAs(ttMove))
 	  continue;
 
-	Position nextPos = pos;
-	nextPos.makeMove(move);
-	m_movelist[100 + ply] = move;
+	Node *next = makeMove(n, move);
+	int score = -qsearch(next, -beta, -alpha);
+	if (score > bestScore) {
+	  bestScore = score;
+	  bestMove = move;
+	  hasBestMove = true;
 
-	int nextRepPly = move.resetsRule50() ? ply + 1 : repPly;
+	  if (score >= beta) {
+	    m_tt->insert(pos, move, beta, LOWERBOUND, 0, ply);
+	    return score;
+	  }
 
+	  if (score > alpha) {
+	    raisedAlpha = true;
+	    alpha = score;
+	  }
+	}
+      }
+
+      if (hasBestMove)
+	m_tt->insert(pos, bestMove, bestScore, raisedAlpha ? EXACT : UPPERBOUND, 0, ply);
+
+      return bestScore;
+    }
+
+    /* Main search routine. */
+    template<bool IsPV>
+    int search(Node *n, int alpha, int beta, int depth)
+    {
+      /* If the depth becomes zero or negative, enter quiescence search here.  */
+      if (depth <= 0)
+	return qsearch(n, alpha, beta);
+
+      const Position &pos = n->pos;
+      int ply = n->ply;
+
+      bool isRootNode = ply == 0;
+
+      if (pos.rule50() >= 100)
+	return 0;
+      if (detectRepetition(n, n->repNode))
+	return 0;
+
+      /* Mate Distance Pruning: we cannot possibly achieve a
+	 better checkmate score than alpha, therefore prune
+         this branch immediately. (and the same for beta)  */
+      if (MateIn(ply + 1) <= alpha)
+	return alpha;
+
+      if (MatedIn(ply) >= beta)
+	return beta;
+
+      if (incrementNodes())
+	throw TimeOverToken();
+
+      if (ply > m_maxPlySearched)
+	m_maxPlySearched = ply;
+
+      int staticEval = Evaluate(pos);
+
+      if (ply >= MAX_PLY)
+	return staticEval;
+
+      bool inCheck = pos.inCheck();
+      n->staticEval = staticEval;
+      n->inCheck = inCheck;
+
+      /* Check extension: search deeper if we are in check.  */
+      if (inCheck)
+	depth++;
+
+      if (depth > MAX_PLY)
+	depth = MAX_PLY;
+
+      /* Reverse Futility Pruning: in non-PV nodes, if static evaluation
+	 beats beta by a wide margin, prune this branch.  */
+      if (!IsPV && !inCheck) {
+	int margin = 150 * depth;
+
+	if (staticEval >= beta + margin)
+	  return staticEval;
+      }
+
+      int bestScore = MatedIn(ply);
+      Move bestMove;
+      bool raisedAlpha = false;
+
+      /* Now probe the transposition table.  */
+      Move ttMove;
+      std::optional<TTEntry> tt = m_tt->probe(pos, ply);
+
+      if (isRootNode) {
+	/* If this is the root node, use the best move from the
+	   previous iteration instead of from the TT. This move
+	   is guaranteed to exist (at the beginning, it is any
+	   legal move).  */
+	n->ttMove = ttMove = m_bestRootMove;
+	goto searchAsHashMove;
+      }
+
+      if (tt) {
+	n->ttMove = ttMove = tt->move;
+
+	/* Allow TT cutoffs if the TT depth is greater than or
+	   equal to our depth. When the TT score is decisive
+	   (winning or losing checkmate), depth doesn't matter
+	   since this position was searched deep enough to find
+	   a forced checkmate.  */
+	if (tt->depth >= depth || IsDecisive(tt->score)) {
+	  switch(tt->boundType) {
+	  case LOWERBOUND:
+	    if (tt->score >= beta)
+	      return tt->score;
+	    break;
+	  case UPPERBOUND:
+	    if (tt->score <= alpha)
+	      return tt->score;
+	    break;
+	  default:
+	    return tt->score;
+	  }
+	}
+
+searchAsHashMove: /* At the root, the best move from the previous iteration is
+		     searched as if it were the hash move.  */
+
+	/* Search the hash move first.  */
+	int score = -search<IsPV>(makeMove(n, ttMove), -beta, -alpha, depth - 1);
+
+	if (score >= beta) {
+	  m_tt->insert(pos, ttMove, beta, LOWERBOUND, depth, ply);
+	  m_moveHistory[ply & 1].pushQuiet(ttMove, 300 * depth - 250);
+	  return score;
+	}
+
+	bestScore = score;
+	bestMove = ttMove;
+
+	if (score > alpha) {
+	  alpha = score;
+	  raisedAlpha = true;
+	} else if (isRootNode) {
+	  /* In the root node, return early if the first move fails low.
+	     This happens only because of aspiration windows.  */
+	  return score;
+	}
+      }
+
+      /* Search all moves now, except the ttMove which we already searched.  */
+      MovePicker mp(pos, false, m_moveHistory[ply & 1]);
+      while (std::optional<Move> optMove = mp.nextMove()) {
+	Move move = optMove.value();
+	if (move.sameAs(ttMove))
+	  continue;
+
+	Node *next = makeMove(n, move);
 	int score;
 
-	if (!raisedAlpha || depth <= 0)
-	  goto searchAsPV;
+	try {
+	  /* Null window search: If we have raised alpha, we already have
+	     an acceptable move and a best score in this position. This
+	     lets us do a scout search to prove that an other move is
+	     worse.  */
+	  if (IsPV && raisedAlpha) {
+	    score = -search<false>(next, -alpha - 1, -alpha, depth - 1);
+	    /* If the scout search fails high, re-search with our window.  */
+	    if (score > alpha)
+	      score = -search<true>(next, -beta, -alpha, depth - 1);
+	  } else {
+	    score = -search<IsPV>(next, -beta, -alpha, depth - 1);
+	  }
+	} catch (TimeOverToken token) {
+	  if (!isRootNode)
+	    throw;
 
-	/* Null window search: if we have raised alpha, we have
-	   a best score in this position already. This means we
-	   can do a scout search to prove that a move is worse
-	   than our known best move.
+	  /* In the root node, handle search timeouts specially. We can
+	     yield a value from an incomplete search but we have to mark
+	     it as a lowerbound.  */
+	  m_rootIsLowerBound = true;
+	  return bestScore;
+	}
 
-	   We avoid NWS in quiescence search.  */
-
-	score = -Negamax<false>(nextPos, depth - ONEPLY,
-				ply + 1, nextRepPly,
-				-alpha - 1,
-				-alpha);
-
-	if (IsPV && alpha < score) {
-	  m_stat.numPVSResearch++;
-searchAsPV:
-	  score = -Negamax<IsPV>(nextPos, depth - ONEPLY,
-				 ply + 1, nextRepPly,
-				 -beta, -alpha);
+	if (score >= beta) {
+	  m_tt->insert(pos, move, beta, LOWERBOUND, depth, ply);
+	  mp.betaCutoff(300 * depth - 250, 300 * depth - 250);
+	  if (isRootNode)
+	    m_bestRootMove = move;
+	  return score;
 	}
 
 	if (score > bestScore) {
 	  bestScore = score;
 	  bestMove = move;
-	  hasBestMove = true;
+	  if (score > alpha) {
+	    alpha = score;
+	    raisedAlpha = true;
+	  }
+	  if (isRootNode)
+	    m_bestRootMove = move;
 	}
 
-	if (score > alpha) {
-	  raisedAlpha = true;
-	  alpha = score;
-	  if (score >= beta) {
-	    /* Beta cutoff.  */
-	    m_stat.betaCutoffDistribution[numMovesSearched]++;
-	    mp.betaCutoff(depth);
-	    m_tt->insert(pos, move, beta, LOWERBOUND, depth, ply);
-	    return score;
+	/* In the root node, now is a very good time to test for
+	   soft-stopping conditions.  */
+	if (isRootNode) {
+	  if (shouldSoftStop()) {
+	    if (mp.nextMove())
+	      m_rootIsLowerBound = true;
+	    return bestScore;
 	  }
 	}
-
-	numMovesSearched++;
       }
 
-      if (bestScore == SCORE_MIN) {
-	if (pos.inCheck())
-	  return MatedIn(ply);
-	else
-	  return 0;
-      }
+      if (bestScore == MatedIn(ply))
+	return inCheck ? bestScore : 0;
 
-      /* We cannot insert into the transposition table if we
-	 lack a bestMove (e.g. if quiescence search ends up
-	 with the standing-pat score).  */
-      if (hasBestMove)
-	m_tt->insert(pos, bestMove, bestScore,
-		     raisedAlpha ? EXACT : UPPERBOUND,
-		     depth, ply);
-
-      if (!raisedAlpha)
-	m_stat.numAllNodes++;
+      m_tt->insert(pos, bestMove, bestScore,
+		   raisedAlpha ? EXACT : UPPERBOUND,
+		   depth, ply);
 
       return bestScore;
     }
 
-    std::tuple<Move, int, BoundType> SearchRoot(int depth, Move pvMove,
-						int alpha, int beta)
-    {
-      const Position &pos = m_pEngine->getPosition();
-      m_maxPlySearched = 0;
-
-      /* Search the pvMove first.
-
-         This ensures we don't lose the best move when we
-         exit in the middle of a search.  */
-
-      try {
-	Position nextPos = pos;
-	nextPos.makeMove(pvMove);
-	m_movelist[100] = pvMove;
-
-	int repPly = pvMove.resetsRule50() ? 1 : m_rootRepPly;
-
-	int score = -Negamax<true>(nextPos, depth - ONEPLY,
-				   1, repPly, -beta, -alpha);
-
-	/* If we fail low on the first move, we are aspiring and
-	   we should immediately return the fail low so that the
-	   window is widened.  */
-
-	if (score <= alpha)
-	  return std::make_tuple(pvMove, alpha, UPPERBOUND);
-
-	alpha = score;
-      } catch (TimeOverToken token) {
-	/* If we did not even have a chance to search the
-	   principal variation, just return alpha. The search
-	   is over anyways and this score won't land in the TT.  */
-
-	return std::make_tuple(pvMove, alpha, LOWERBOUND);
-      }
-
-      if (alpha >= beta)
-	/* The principal variation caused a beta cutoff. This
-	   also happens because of aspiration windows.  */
-	return std::make_tuple(pvMove, alpha, LOWERBOUND);
-
-      Move bestMove = pvMove;
-      MovePicker mp(pos, m_historyArray[0]);
-
-      while (std::optional<Move> optMove = mp.nextMove()) {
-	Move move = optMove.value();
-
-	/* Skip the principal variation move.  */
-	if (move.sameAs(pvMove))
-	  continue;
-
-	Position nextPos = pos;
-	nextPos.makeMove(move);
-	m_movelist[100] = move;
-
-	int repPly = move.resetsRule50() ? 1 : m_rootRepPly;
-
-	int score;
-	try {
-	  /* Null window search. */
-	  score = -Negamax<false>(nextPos, depth - ONEPLY,
-				  1, repPly,
-				  -alpha - 1,
-				  -alpha);
-	} catch (TimeOverToken token) {
-
-	  /* If we run out of time in the midst of searching, we
-	     can fall back to the best move we have searched thus
-	     far as a lower-bound. This is safe because we search
-	     the principal variation search.  */
-
-	  return std::make_tuple(bestMove, alpha, LOWERBOUND);
-	}
-
-	/* If the null window search fails high, we must retry
-	   the search with an open window (or our (a; b) window).  */
-	if (score > alpha) {
-	  try {
-	    score = -Negamax<true>(nextPos, depth - ONEPLY,
-				   1, repPly, -beta, -alpha);
-	  } catch (TimeOverToken token) {
-	    /* We failed high in the null window search. This
-	       means that our move was deemed better than the
-	       previous known best move.  */
-
-	    return std::make_tuple(move, score, LOWERBOUND);
-	  }
-
-	  /* Because of search instability, the score might have
-	     dropped below alpha when we re-search.  Test if the
-	     score is still above alpha before updating bestMove.  */
-	  if (score > alpha) {
-	    bestMove = move;
-	    alpha = score;
-	    if (score >= beta) {
-	      /* Beta cutoff.  */
-	      mp.betaCutoff(depth);
-	      return std::make_tuple(move, score, LOWERBOUND);
-	    }
-	  }
-	}
-
-	/* Now is a really good time to test for soft-stopping
-	   conditions.  */
-	if (shouldSoftStop()) {
-	  if (mp.nextMove())
-	    return std::make_tuple(bestMove, alpha, LOWERBOUND);
-	  else
-	    return std::make_tuple(bestMove, alpha, EXACT);
-	}
-      }
-
-      return std::make_tuple(bestMove, alpha, EXACT);
-    }
-
-  public:
-    Searcher(Engine *engine, SearchGlobalState *global,
-	     TranspositionTable *tt)
-    {
-      m_pEngine = engine;
-      m_pGlobal = global;
-      m_tt = tt;
-      m_lastPeriodicInfo = global->goTime;
-
-      const std::vector<Move> repMoves = engine->getRepetitionMoves();
-      m_rootRepPly = -repMoves.size();
-      for (int i = 0; i < (int) repMoves.size(); i++)
-	m_movelist[100 + m_rootRepPly + i] = repMoves[i];
-      for (int i = 0; i < 2; i++) {
-	for (int j = 0; j < 64; j++) {
-	  for (int k = 0; k < 64; k++)
-	    m_historyArray[i][j][k] = 0;
-	}
-      }
-    }
-
-    void Search()
+public:
+    void doSearch()
     {
       std::vector<Move> legalMoves;
       std::vector<std::optional<Move>> ponderMoves;
 
       {
-	MovePicker mp(m_pEngine->getPosition(),
-		      m_historyArray[0]);
+	MovePicker mp(m_pEngine->getPosition(), false, m_moveHistory[0]);
 	while (std::optional<Move> optMove = mp.nextMove()) {
 	  legalMoves.push_back(optMove.value());
 	  ponderMoves.push_back(std::nullopt);
 	}
       }
 
-      /* Start out with any random move as the PV.  */
-      Move bestMove = legalMoves[0];
+      if (std::optional<TTEntry> tt = m_tt->probe(m_pEngine->getPosition(), 0))
+	m_bestRootMove = tt->move;
+      else
+	m_bestRootMove = legalMoves[0];
 
+      Node *root = m_nodes + 100;
+
+      /* Perform an initial shallow search of the root node to obtain
+	 an initial guess for the score of a position.  */
       int score;
-      BoundType boundType;
+      try {
+	score = search<true>(root, SCORE_MIN, SCORE_MAX, 1);
+      } catch (TimeOverToken token) {
+	// If this timeouts, there is nothing we can do.
+	m_pEngine->getCallbacks().bestmove(m_bestRootMove, std::nullopt);
+	return;
+      }
 
-      /* Perform an initial fixed-depth search to get a
-	 first approximation of the score.  */
+      sendScoreAndPV(score, m_rootIsLowerBound ? LOWERBOUND : EXACT, 1, m_bestRootMove);
+      if (m_rootIsLowerBound) {
+	m_pGlobal->inProgress.store(false);
+	m_pEngine->getCallbacks().bestmove(m_bestRootMove, std::nullopt);
+	return;
+      }
 
-      std::tie(bestMove, score, boundType) = SearchRoot(ONEPLY,
-							bestMove,
-							SCORE_MIN,
-							SCORE_MAX);
-
-      sendScoreAndPV(score, boundType, ONEPLY, bestMove);
-
-      /* Iterative deepening.  */
-
-      int searchDepth = 2 * ONEPLY;
+      /* Iterative deepening loop.  */
+      int depth = 2;
       while (!shouldHardStop() && !shouldSoftStop()) {
-	if (m_pGlobal->depthLimit &&
-	    searchDepth / ONEPLY > m_pGlobal->depthLimit)
+	if (m_pGlobal->depthLimit && depth > m_pGlobal->depthLimit)
+	  break;
+	if (depth > MAX_PLY)
 	  break;
 
-	/* If we have found a checkmate (for us or for the
-	   opponent), exit the search immediately.  */
-
+	/* If we have found a checkmate, quit searching instantly.  */
 	if (IsDecisive(score))
 	  break;
 
-	/* Perform an aspirated search with a fixed window of
-	   20 centipawns, on the assumption that the score
-	   doesn't change much with each iteration.  */
-
+	/* Perform an aspirated search on a window centered around the
+	   score from the previous iteration of search.  */
 	int alpha = score - 20;
 	int beta = score + 20;
 
@@ -764,55 +739,57 @@ searchAsPV:
 	if (SCORE_MAX < beta)
 	  beta = SCORE_MAX;
 
-	std::tie(bestMove, score, boundType) = SearchRoot(searchDepth,
-							  bestMove,
-							  alpha, beta);
-
-	if (boundType != LOWERBOUND || !IsDecisive(score))
-	  sendScoreAndPV(score, boundType, searchDepth, bestMove);
+	try {
+	  score = search<true>(root, alpha, beta, depth);
+	} catch (TimeOverToken token) {
+	  break;
+	}
 
 	if (score <= alpha || beta <= score) {
+	  /* The aspirated search failed and we should research with an
+	     open window.  */
+	  sendScoreAndPV(score, (score <= alpha) ? UPPERBOUND :
+			        (score >= beta) ? LOWERBOUND : EXACT,
+			 depth, m_bestRootMove);
+
 	  if (shouldHardStop() || shouldSoftStop())
 	    break;
 
-	  /* The aspirated search failed and we should research the root
-	     move with an open window.  */
-
-	  std::tie(bestMove, score, boundType) = SearchRoot(searchDepth,
-							    bestMove,
-							    SCORE_MIN,
-							    SCORE_MAX);
-
-	  if (boundType != LOWERBOUND || !IsDecisive(score))
-	    sendScoreAndPV(score, boundType, searchDepth, bestMove);
+	  try {
+	    score = search<true>(root, SCORE_MIN, SCORE_MAX, depth);
+	  } catch (TimeOverToken token) {
+	    goto researchTimedOut;
+	  }
 	}
 
-	searchDepth += ONEPLY;
+	sendScoreAndPV(score, m_rootIsLowerBound ? LOWERBOUND : EXACT,
+		       depth, m_bestRootMove);
 
-	/* Update ponder moves.  */
-	for (size_t i = 0; i < legalMoves.size(); i++) {
+researchTimedOut:
+	for (int i = 0; i < (int) legalMoves.size(); i++) {
 	  std::optional<Move> ponderMove = getPonderMove(legalMoves[i]);
 	  if (ponderMove)
 	    ponderMoves[i] = ponderMove;
 	}
+
+	if (m_rootIsLowerBound)
+	  break;
+
+	depth++;
       }
 
-      /* Search is done. Try really hard to get a ponder move.  */
-
+      /* Search is done. Get the ponder move.  */
       std::optional<Move> ponderMove = std::nullopt;
-      for (size_t i = 0; i < legalMoves.size(); i++) {
-	if (legalMoves[i].sameAs(bestMove)) {
+      for (int i = 0; i < (int) legalMoves.size(); i++) {
+	if (m_bestRootMove.sameAs(legalMoves[i])) {
 	  ponderMove = ponderMoves[i];
 	  break;
 	}
       }
 
-      m_pEngine->getCallbacks().info("search exited");
-      m_stat.show(m_pEngine->getCallbacks());
       waitForNonPonder();
-
       m_pGlobal->inProgress.store(false);
-      m_pEngine->getCallbacks().bestmove(bestMove, ponderMove);
+      m_pEngine->getCallbacks().bestmove(m_bestRootMove, ponderMove);
     }
   };
 
@@ -820,6 +797,6 @@ searchAsPV:
 	      TranspositionTable *tt)
   {
     std::unique_ptr<Searcher> searcher = std::make_unique<Searcher>(engine, state, tt);
-    searcher->Search();
+    searcher->doSearch();
   }
 } // namespace DSchack
