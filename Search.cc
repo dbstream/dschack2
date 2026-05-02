@@ -359,6 +359,7 @@ private:
     }
 
     /* Quiescence search routine. */
+    template<bool IsPV>
     int qsearch(Node *n, int alpha, int beta)
     {
       const Position &pos = n->pos;
@@ -430,7 +431,7 @@ private:
 	if (ttMove.isCapture() || inCheck) {
 	  /* Search the TT move first.  */
 	  Node *next = makeMove(n, ttMove);
-	  int score = -qsearch(next, -beta, -alpha);
+	  int score = -qsearch<IsPV>(next, -beta, -alpha);
 	  if (score > bestScore) {
 	    bestScore = score;
 	    bestMove = ttMove;
@@ -457,7 +458,15 @@ private:
 	  continue;
 
 	Node *next = makeMove(n, move);
-	int score = -qsearch(next, -beta, -alpha);
+	int score;
+
+	if (IsPV && inCheck && hasBestMove && raisedAlpha) {
+	  score = -qsearch<false>(next, -alpha - 1, -alpha);
+	  if (score > alpha)
+	    score = -qsearch<true>(next, -beta, -alpha);
+	} else
+	  score = -qsearch<IsPV>(next, -beta, -alpha);
+
 	if (score > bestScore) {
 	  bestScore = score;
 	  bestMove = move;
@@ -487,7 +496,7 @@ private:
     {
       /* If the depth becomes zero or negative, enter quiescence search here.  */
       if (depth <= 0)
-	return qsearch(n, alpha, beta);
+	return qsearch<IsPV>(n, alpha, beta);
 
       const Position &pos = n->pos;
       int ply = n->ply;
@@ -575,7 +584,8 @@ private:
 	      return tt->score;
 	    break;
 	  default:
-	    return tt->score;
+	    if (!IsPV)
+	      return tt->score;
 	  }
 	}
 
@@ -746,6 +756,8 @@ public:
 	}
 
 	if (score <= alpha || beta <= score) {
+	  if (shouldSoftStop())
+	    break;
 	  /* The aspirated search failed and we should research with an
 	     open window.  */
 	  sendScoreAndPV(score, (score <= alpha) ? UPPERBOUND :
