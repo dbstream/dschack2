@@ -608,8 +608,11 @@ private:
       }
 
       /* Null Move Pruning: if we are not in check and we are not in the
-	 PV, try a null move search unless we have only our king and pawns.  */
+	 PV, try a null move search unless we have only our king and pawns.
+
+         We disallow two consecutive null moves.  */
       allowNMP = !IsPV && !inCheck
+	&& !(n - 1)->currentMove.isNull()
 	&& (pos.pieces(stm, ALL)
 	    & ~pos.pieces(stm, KING) & ~pos.pieces(stm, PAWN));
 
@@ -617,8 +620,16 @@ private:
 	Node *next = makeNullMove(n);
 
 	int score = -search<false>(next, -beta, 1 - beta, depth - 4);
-	if (score >= beta)
-	  return score;
+	if (score >= beta) {
+	  if (depth < 8)
+	    return score;
+
+	  /* To mitigate zugzwang blindness, we perform a
+	     verification search at high depths.  */
+	  score = search<false>(n, beta - 1, beta, depth - 8);
+	  if (score >= beta)
+	    return score;
+	}
       }
 
       if (tt) {
