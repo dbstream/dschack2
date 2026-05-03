@@ -358,6 +358,19 @@ private:
       return next;
     }
 
+    Node *makeNullMove(Node *current)
+    {
+      Node *next = current + 1;
+
+      current->currentMove = Move::makeNull();
+      next->pos = current->pos;
+      next->pos.makeNullMove();
+      next->ttMove = std::nullopt;
+      next->repNode = current->repNode;
+
+      return next;
+    }
+
     /* Quiescence search routine. */
     template<bool IsPV>
     int qsearch(Node *n, int alpha, int beta)
@@ -548,6 +561,8 @@ private:
 	  return staticEval;
       }
 
+      Color stm = pos.sideToMove();
+
       int bestScore = MatedIn(ply);
       Move bestMove;
       bool raisedAlpha = false;
@@ -555,6 +570,8 @@ private:
       /* Now probe the transposition table.  */
       Move ttMove;
       std::optional<TTEntry> tt = m_tt->probe(pos, ply);
+
+      bool allowNMP = false;
 
       if (isRootNode) {
 	/* If this is the root node, use the best move from the
@@ -588,7 +605,23 @@ private:
 	      return tt->score;
 	  }
 	}
+      }
 
+      /* Null Move Pruning: if we are not in check and we are not in the
+	 PV, try a null move search unless we have only our king and pawns.  */
+      allowNMP = !IsPV && !inCheck
+	&& (pos.pieces(stm, ALL)
+	    & ~pos.pieces(stm, KING) & ~pos.pieces(stm, PAWN));
+
+      if (depth >= 4 && allowNMP) {
+	Node *next = makeNullMove(n);
+
+	int score = -search<false>(next, -beta, 1 - beta, depth - 4);
+	if (score >= beta)
+	  return score;
+      }
+
+      if (tt) {
 searchAsHashMove: /* At the root, the best move from the previous iteration is
 		     searched as if it were the hash move.  */
 
