@@ -223,6 +223,7 @@ namespace DSchack {
     if (!isPositionLegal(pos))
       return std::nullopt;
 
+    pos.refreshAccumulator();
     return pos;
   }
 

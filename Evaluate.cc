@@ -3,6 +3,7 @@
 
    Copyright (C) 2026  David Bergström */
 
+#include "Accumulator.h"
 #include "Evaluate.h"
 
 namespace DSchack {
@@ -144,29 +145,61 @@ namespace DSchack {
     KING
   };
 
-  int Evaluate(const Position &pos)
+  void Accumulator::refresh(const Position &pos)
   {
-    int phase = 0;
-    int score_mg = 0;
-    int score_eg = 0;
+    m_score_mg = 0;
+    m_score_eg = 0;
+    m_phase = 0;
 
     for (PieceType piece : allPieceTypes) {
       Bitboard white_occ = pos.pieces(WHITE, piece);
       Bitboard black_occ = pos.pieces(BLACK, piece);
 
-      score_mg += pieceValueTable_mg[piece] * (Popcount(white_occ) - Popcount(black_occ));
-      score_eg += pieceValueTable_eg[piece] * (Popcount(white_occ) - Popcount(black_occ));
-      phase += phaseInc[piece] * (Popcount(white_occ) + Popcount(black_occ));
-
       while (Bitboard sqm = PopLS1B(white_occ)) {
-	score_mg += psqt_mg[piece][Sq(sqm) ^ 56];
-	score_eg += psqt_eg[piece][Sq(sqm) ^ 56];
+	m_score_mg += pieceValueTable_mg[piece] + psqt_mg[piece][Sq(sqm) ^ 56];
+	m_score_eg += pieceValueTable_eg[piece] + psqt_eg[piece][Sq(sqm) ^ 56];
+	m_phase += phaseInc[piece];
       }
+
       while (Bitboard sqm = PopLS1B(black_occ)) {
-	score_mg -= psqt_mg[piece][Sq(sqm)];
-	score_eg -= psqt_eg[piece][Sq(sqm)];
+	m_score_mg -= pieceValueTable_mg[piece] + psqt_mg[piece][Sq(sqm)];
+	m_score_eg -= pieceValueTable_eg[piece] + psqt_eg[piece][Sq(sqm)];
+	m_phase += phaseInc[piece];
       }
     }
+  }
+
+  void Accumulator::addPiece(Color color, PieceType piece, int sq)
+  {
+    m_phase += phaseInc[piece];
+    if (color == WHITE) {
+      m_score_mg += pieceValueTable_mg[piece] + psqt_mg[piece][sq ^ 56];
+      m_score_eg += pieceValueTable_eg[piece] + psqt_eg[piece][sq ^ 56];
+    } else {
+      m_score_mg -= pieceValueTable_mg[piece] + psqt_mg[piece][sq];
+      m_score_eg -= pieceValueTable_eg[piece] + psqt_eg[piece][sq];
+    }
+  }
+
+  void Accumulator::removePiece(Color color, PieceType piece, int sq)
+  {
+    m_phase -= phaseInc[piece];
+    if (color == WHITE) {
+      m_score_mg -= pieceValueTable_mg[piece] + psqt_mg[piece][sq ^ 56];
+      m_score_eg -= pieceValueTable_eg[piece] + psqt_eg[piece][sq ^ 56];
+    } else {
+      m_score_mg += pieceValueTable_mg[piece] + psqt_mg[piece][sq];
+      m_score_eg += pieceValueTable_eg[piece] + psqt_eg[piece][sq];
+    }
+  }
+
+  int Evaluate(const Position &pos)
+  {
+    const Accumulator &accum = pos.accumulator();
+
+    int score_mg = accum.m_score_mg;
+    int score_eg = accum.m_score_eg;
+    int phase = accum.m_phase;
 
     if (phase > 24) phase = 24;
 

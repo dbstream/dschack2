@@ -12,25 +12,11 @@
 #include <stdint.h>
 #include <vector>
 
+#include "Accumulator.h"
 #include "Bitboard.h"
+#include "Types.h"
 
 namespace DSchack {
-  enum Color {
-    WHITE,
-    BLACK,
-    BOTH
-  };
-
-  enum PieceType {
-    PAWN,
-    KNIGHT,
-    BISHOP,
-    ROOK,
-    QUEEN,
-    KING,
-    ALL
-  };
-
   typedef int CastlingRights;
   enum {
     QUEENSIDE = 1,
@@ -234,6 +220,8 @@ namespace DSchack {
     CastlingRights m_castlingRights[2] {};
 
     Color m_sideToMove = WHITE;
+
+    Accumulator m_accum;
 
   public:
     /** pieces: get the corresponding piece Bitboard.
@@ -486,6 +474,16 @@ namespace DSchack {
       return attackedByOcc(pieces(BOTH, ALL), kingSq, them);
     }
 
+    void refreshAccumulator()
+    {
+      m_accum.refresh(*this);
+    }
+
+    constexpr const Accumulator &accumulator() const
+    {
+      return m_accum;
+    }
+
     constexpr void makeNullMove()
     {
       Color us = sideToMove();
@@ -514,10 +512,14 @@ namespace DSchack {
       xorPiece(us, move.piece(), move.fromSquare());
       xorPiece(us, move.piece(), move.toSquare());
 
+      m_accum.removePiece(us, move.piece(), move.fromSquare());
+      m_accum.addPiece(us, move.piece(), move.toSquare());
+
       if (move.isEnPassant()) {
 	// On enpassant, capture the pawn.
 	int epsq = move.toSquare() + ((us == WHITE) ? BBSouth : BBNorth);
 	xorPiece(them, PAWN, epsq);
+	m_accum.removePiece(them, PAWN, epsq);
 	setEnpassantFile(-1);
       } else if(move.isDoublePush()) {
 	// On a double push, set the new en-passant file.
@@ -529,26 +531,37 @@ namespace DSchack {
 	if (move.isCapture()) {
 	  // Remove it from the board.
 	  xorPiece(them, move.capture(), move.toSquare());
+	  m_accum.removePiece(them, move.capture(), move.toSquare());
 	}
 
 	if (move.isPromotion()) {
 	  // Replace the pawn with the promoted to piece.
 	  xorPiece(us, PAWN, move.toSquare());
 	  xorPiece(us, move.promotion(), move.toSquare());
+	  m_accum.removePiece(us, PAWN, move.toSquare());
+	  m_accum.addPiece(us, move.promotion(), move.toSquare());
 	} else if (move.isCastles()) {
 	  // Move the castled rook.
 	  if (bbFromTo & BB(C1)) {
 	    xorPiece(WHITE, ROOK, A1);
 	    xorPiece(WHITE, ROOK, D1);
+	    m_accum.removePiece(WHITE, ROOK, A1);
+	    m_accum.addPiece(WHITE, ROOK, D1);
 	  } else if (bbFromTo & BB(G1)) {
 	    xorPiece(WHITE, ROOK, H1);
 	    xorPiece(WHITE, ROOK, F1);
+	    m_accum.removePiece(WHITE, ROOK, H1);
+	    m_accum.addPiece(WHITE, ROOK, F1);
 	  } else if (bbFromTo & BB(C8)) {
 	    xorPiece(BLACK, ROOK, A8);
 	    xorPiece(BLACK, ROOK, D8);
+	    m_accum.removePiece(BLACK, ROOK, A8);
+	    m_accum.addPiece(BLACK, ROOK, D8);
 	  } else {
 	    xorPiece(BLACK, ROOK, H8);
 	    xorPiece(BLACK, ROOK, F8);
+	    m_accum.removePiece(BLACK, ROOK, H8);
+	    m_accum.addPiece(BLACK, ROOK, F8);
 	  }
 	}
 
