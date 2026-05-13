@@ -6,7 +6,10 @@
 This is the engine entry point.  It implements the receiver end of
 the UCI protocol, which is used for user<->engine communication.  */
 
+#include <algorithm>
+#include <fstream>
 #include <iostream>
+#include <random>
 #include <span>
 #include <stdio.h>
 #include <string.h>
@@ -14,6 +17,7 @@ the UCI protocol, which is used for user<->engine communication.  */
 #include <vector>
 #include <mutex>
 
+#include "AutoEngine.h"
 #include "Bitboard.h"
 #include "Engine.h"
 #include "MoveGen.h"
@@ -544,9 +548,152 @@ namespace DSchack {
 	break;
     }
   }
+
+  int start_datagen(std::vector<std::string> &args)
+  {
+    InitBitboards();
+    TestBitboards();
+    InitZobristTables();
+
+    enum Option {
+      NONE,
+      OPENINGS,
+      NUM_GAMES,
+      MOVETIME
+    };
+
+    Option field = NONE;
+
+    std::string openingBook;
+    int numGames = 1;
+    int movetime = 20;
+
+    for (int i = 1; i < (int) args.size(); i++) {
+      switch (field) {
+      case OPENINGS:
+	field = NONE;
+	openingBook = args[i];
+	break;
+      case NUM_GAMES:
+	field = NONE;
+	{
+	  int value = parseInt(args[i]);
+	  if (value > 0)
+	    numGames = value;
+	}
+	break;
+      case MOVETIME:
+	field = NONE;
+	{
+	  int value = parseInt(args[i]);
+	  if (value > 0)
+	    movetime = value;
+	}
+	break;
+      default:
+	if (args[i] == "-openings")
+	  field = OPENINGS;
+	else if (args[i] == "-games")
+	  field = NUM_GAMES;
+	else if (args[i] == "-movetime")
+	  field = MOVETIME;
+      }
+    }
+
+    std::vector<Position> openings;
+
+    {
+      std::ifstream filp(openingBook);
+
+      if (!filp.is_open()) {
+	std::cerr << "error: cannot read opening book\n";
+	return 1;
+      }
+
+      std::cerr << "Indexing opening book...\n";
+
+      std::string line;
+      while (std::getline(filp, line)) {
+	std::vector<std::string_view> parts = splitOnWhitespace(line);
+	std::optional<Position> pos = ParseFEN(parts);
+	if (pos)
+	  openings.push_back(pos.value());
+      }
+    }
+
+    if (!openings.size()) {
+      std::cerr << "error: the opening book is empty or corrupted\n";
+      return 1;
+    }
+
+    std::default_random_engine rng;
+    std::ranges::shuffle(openings, rng);
+
+    if (numGames > (int) openings.size())
+      numGames = (int) openings.size();
+
+    std::cerr << "Running datagen (" << numGames << " games) with opening book \"" << openingBook << "\"\n";
+
+    AutoEngine engine;
+    for (int i = 0; i < numGames; i++) {
+      Position startpos = openings[i];
+      Position pos = startpos;
+      std::vector<Move> moves;
+
+      std::vector<std::pair<std::string, int>> savedPositions;
+
+      engine.newGame();
+      int result = 0;
+
+      for (;;) {
+	if (pos.rule50() >= 100)
+	  break;
+	engine.setPosition(pos, moves);
+	if (engine.isRepetitionDraw(1) || engine.isMaterialDraw())
+	  break;
+
+	Move move;
+	std::optional<int> optScore;
+	std::tie(move, optScore) = engine.search(movetime);
+
+	if (optScore) {
+	  int score = optScore.value();
+
+	  if (score >= 10000 || score <= -10000) {
+	    result = (score >= 0) ? 1 : -1;
+	    break;
+	  }
+
+	  if (!score)
+	    break;
+
+	  if (!move.isCapture() && !move.isEnPassant())
+	    savedPositions.push_back(std::make_pair(pos.toFEN(), score));
+	}
+
+	moves.push_back(move);
+	pos.makeMove(move);
+      }
+
+      for (std::pair<std::string, int> saved : savedPositions) {
+	std::cout << saved.first << " " << saved.second << " "
+		  << (result == -1 ? "b" : result == 1 ? "w" : "d") << "\n";
+      }
+    }
+
+    return 0;
+  }
 }
 
-int main()
+int main(int argc, char **argv)
 {
-  DSchack::start();
+  std::vector<std::string> args;
+  for (int i = 1; i < argc; i++)
+    args.push_back(argv[i]);
+
+  if (args.size() >= 1 && args[0] == "-datagen")
+    return DSchack::start_datagen(args);
+  else
+    DSchack::start();
+  return 0;
 }

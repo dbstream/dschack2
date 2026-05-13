@@ -136,6 +136,29 @@ namespace DSchack {
 						&m_internal->transpositionTable));
   }
 
+  void Engine::goSynchronous(int movetime)
+  {
+    if (movetime < 0)
+      movetime = 0;
+
+    SearchGlobalState &s = m_internal->searchGlobalState;
+
+    s.goTime = CurrentTime();
+    s.inProgress.store(true, std::memory_order_relaxed);
+    s.stopRequested.store(false, std::memory_order_relaxed);
+    s.ponder.store(false, std::memory_order_relaxed);
+    s.infinite = false;
+    s.fixed_movetime = true;
+    s.ctime = 0;
+    s.cinc = 0;
+    s.movestogo = 0;
+    s.movetime = movetime;
+    s.nodes = 0;
+    s.softTimeLimit = s.goTime + movetime;
+    s.hardTimeLimit = s.goTime + movetime;
+    Search(this, &s, &m_internal->transpositionTable);
+  }
+
   void Engine::ponderhit()
   {
     SearchGlobalState &s = m_internal->searchGlobalState;
@@ -156,5 +179,68 @@ namespace DSchack {
     }
 
     m_internal->searchGlobalState.ponder.store(false, std::memory_order_release);
+  }
+
+  bool Engine::isRepetitionDraw(int repCount)
+  {
+    Bitboard colorBB = 0;
+    Bitboard pieceBB[6] {};
+    int count = 0;
+
+    for (int i = m_repetitionMoves.size() - 2; i >= 0; i -= 2) {
+      Move move1 = m_repetitionMoves[i];
+      Move move2 = m_repetitionMoves[i + 1];
+
+      if (!colorBB)
+	count++;
+      colorBB ^= BB(move1.fromSquare()) ^ BB(move1.toSquare());
+      if (!colorBB)
+	count--;
+      if (!pieceBB[move1.piece()])
+	count++;
+      pieceBB[move1.piece()] ^= BB(move1.fromSquare()) ^ BB(move1.toSquare());
+      if (!pieceBB[move1.piece()])
+	count--;
+      if (!pieceBB[move2.piece()])
+	count++;
+      pieceBB[move2.piece()] ^= BB(move2.fromSquare()) ^ BB(move2.toSquare());
+      if (!pieceBB[move2.piece()])
+	count--;
+      if (!count) {
+	if (--repCount <= 0)
+	  return true;
+      }
+    }
+
+    return false;
+  }
+
+  bool Engine::isMaterialDraw()
+  {
+    if (m_position.pieces(BOTH, QUEEN))
+      return false;
+    if (m_position.pieces(BOTH, ROOK))
+      return false;
+    if (m_position.pieces(BOTH, PAWN))
+      return false;
+
+    Bitboard kings = m_position.pieces(BOTH, KING);
+    bool whiteHasNoPieces = (m_position.pieces(WHITE, ALL) & ~kings) ? true : false;
+    bool blackHasNoPieces = (m_position.pieces(BLACK, ALL) & ~kings) ? true : false;
+
+    if (whiteHasNoPieces && blackHasNoPieces)
+      return true;
+    if (!whiteHasNoPieces && !blackHasNoPieces)
+      return false;
+
+    Color winningSide = whiteHasNoPieces ? BLACK : WHITE;
+    int numKnights = Popcount(m_position.pieces(winningSide, KNIGHT));
+    int numBishops = Popcount(m_position.pieces(winningSide, BISHOP));
+
+    if (numKnights + numBishops <= 1)
+      return true;
+    if (numBishops >= 1)
+      return false;
+    return numKnights < 3;
   }
 }

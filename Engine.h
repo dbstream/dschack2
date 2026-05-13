@@ -156,10 +156,25 @@ namespace DSchack {
 	    int movetime, int movestogo, int nodes,
 	    bool infinite, bool ponder);
 
+    /** goSynchronous: search the current position without
+	using a worker thread.
+    @movetime: Time to spend on this move in milliseconds.
+
+    Do not mix use of go with goSynchronous for the same
+    Engine instance.  */
+    void goSynchronous(int movetime);
+
     /** ponderhit: transition the pondering search into a
 	normal search.
 
     May only be called if there is an ongoing search in ponder mode.  */
     void ponderhit();
+
+    /** isRepetitionDraw: test if the position is a draw by repetition.
+    @count: number of required repetitions to draw  */
+    bool isRepetitionDraw(int count);
+
+    /** isMaterialDraw: test if the position is a draw by insufficient material.  */
+    bool isMaterialDraw();
   };
 } // namespace DSchack

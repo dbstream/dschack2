@@ -3,6 +3,7 @@
 
    Copyright (C) 2026 David Bergström  */
 
+#include <sstream>
 #include "MoveGen.h"
 #include "Position.h"
 
@@ -43,6 +44,75 @@ namespace DSchack {
       for (int j = 0; j < 2; j++)
 	castlingRightsZobristTable[i][j] = gen();
     sideToMoveZobristValue = gen();
+  }
+
+  std::string Position::toFEN()
+  {
+    std::stringstream ss;
+
+    for (int rank = 7; rank >= 0; rank--) {
+      if (rank != 7)
+	ss << "/";
+
+      int numSkipped = 0;
+      for (int file = 0; file <= 7; file++) {
+	int sq = SqFR(file, rank);
+	char c = 0;
+
+	if (pieces(WHITE, ALL) & BB(sq)) {
+	  switch (pieceOnSquare(sq)) {
+	  case PAWN:   c = 'P'; break;
+	  case KNIGHT: c = 'N'; break;
+	  case BISHOP: c = 'B'; break;
+	  case ROOK:   c = 'R'; break;
+	  case QUEEN:  c = 'Q'; break;
+	  case KING:   c = 'K'; break;
+	  }
+	} else if (pieces(BLACK, ALL) & BB(sq)) {
+	  switch (pieceOnSquare(sq)) {
+	  case PAWN:   c = 'p'; break;
+	  case KNIGHT: c = 'n'; break;
+	  case BISHOP: c = 'b'; break;
+	  case ROOK:   c = 'r'; break;
+	  case QUEEN:  c = 'q'; break;
+	  case KING:   c = 'k'; break;
+	  }
+	}
+
+	if (c) {
+	  if (numSkipped) {
+	    ss.put('0' + numSkipped);
+	    numSkipped = 0;
+	  }
+
+	  ss.put(c);
+	} else
+	  numSkipped++;
+      }
+      if (numSkipped)
+	ss.put('0' + numSkipped);
+    }
+
+    ss << (sideToMove() == WHITE ? " w " : " b ");
+
+    bool flag = false;
+    if (castlingRights(WHITE) & KINGSIDE)  { ss << "K"; flag = true; }
+    if (castlingRights(WHITE) & QUEENSIDE) { ss << "Q"; flag = true; }
+    if (castlingRights(BLACK) & KINGSIDE)  { ss << "k"; flag = true; }
+    if (castlingRights(BLACK) & QUEENSIDE) { ss << "q"; flag = true; }
+    if (!flag)
+      ss << "-";
+
+    ss << " ";
+
+    if (enpassantFile() != -1) {
+      ss.put('a' + enpassantFile());
+      ss.put(sideToMove() == WHITE ? '6' : '3');
+    } else
+      ss << "-";
+
+    ss << " " << rule50() << " " << "1";
+    return std::string(ss.view());
   }
 
   static int parseInt(std::string_view sv)

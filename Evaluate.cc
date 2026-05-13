@@ -206,6 +206,8 @@ namespace DSchack {
     int materialScore = (score_mg * phase + score_eg * (24 - phase)) / 24;
 
     int score = materialScore;
+    if (!score)
+      return 1;
     if (pos.sideToMove() == BLACK)
       return -score;
     else

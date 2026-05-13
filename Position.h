@@ -576,6 +576,8 @@ namespace DSchack {
 	  clearCastlingRight(BLACK, KINGSIDE);
       }
     }
+
+    std::string toFEN();
   };
 
   enum PromoteType {
