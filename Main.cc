@@ -14,6 +14,7 @@ the UCI protocol, which is used for user<->engine communication.  */
 #include <stdio.h>
 #include <string.h>
 #include <string>
+#include <thread>
 #include <vector>
 #include <mutex>
 
@@ -549,6 +550,81 @@ namespace DSchack {
     }
   }
 
+  struct DatagenState {
+    std::mutex mutex;
+    int numGames;
+    int currentGameIndex;
+    int movetime;
+  };
+
+  void datagen_thread(DatagenState &state, const std::vector<Position> &openings)
+  {
+    AutoEngine engine;
+
+    for (;;) {
+      state.mutex.lock();
+      int i = state.currentGameIndex;
+      if (i >= state.numGames) {
+	i = -1;
+      } else
+	state.currentGameIndex++;
+      state.mutex.unlock();
+      if (i == -1)
+	return;
+
+      gCoutMutex.lock();
+      std::cerr << "Starting game " << (i + 1) << "/" << state.numGames << "...\n";
+      gCoutMutex.unlock();
+
+      Position startpos = openings[i];
+      Position pos = startpos;
+      std::vector<Move> moves;
+
+      std::vector<std::pair<std::string, int>> savedPositions;
+
+      engine.newGame();
+      int result = 0;
+
+      for (;;) {
+	if (pos.rule50() >= 100)
+	  break;
+	engine.setPosition(pos, moves);
+	if (engine.isRepetitionDraw(1) || engine.isMaterialDraw())
+	  break;
+
+	Move move;
+	std::optional<int> optScore;
+	std::tie(move, optScore) = engine.search(state.movetime);
+
+	if (optScore) {
+	  int score = optScore.value();
+
+	  if (score >= 10000 || score <= -10000) {
+	    result = (score >= 0) ? 1 : -1;
+	    break;
+	  }
+
+	  if (!score)
+	    break;
+
+	  if (!move.isCapture() && !move.isEnPassant() && !pos.inCheck())
+	    savedPositions.push_back(std::make_pair(pos.toFEN(), score));
+	}
+
+	moves.push_back(move);
+	pos.makeMove(move);
+      }
+
+      gCoutMutex.lock();
+      std::cerr << "Finished game " << (i + 1) << "/" << state.numGames << ".\n";
+      for (std::pair<std::string, int> saved : savedPositions) {
+	std::cout << saved.first << " " << saved.second << " "
+		  << (result == -1 ? "b" : result == 1 ? "w" : "d") << "\n";
+      }
+      gCoutMutex.unlock();
+    }
+  }
+
   int start_datagen(std::vector<std::string> &args)
   {
     InitBitboards();
@@ -559,7 +635,8 @@ namespace DSchack {
       NONE,
       OPENINGS,
       NUM_GAMES,
-      MOVETIME
+      MOVETIME,
+      NUM_THREADS
     };
 
     Option field = NONE;
@@ -567,6 +644,7 @@ namespace DSchack {
     std::string openingBook;
     int numGames = 1;
     int movetime = 20;
+    int numThreads = 1;
 
     for (int i = 1; i < (int) args.size(); i++) {
       switch (field) {
@@ -590,6 +668,14 @@ namespace DSchack {
 	    movetime = value;
 	}
 	break;
+      case NUM_THREADS:
+	field = NONE;
+	{
+	  int value = parseInt(args[i]);
+	  if (value > 0)
+	    numThreads = value;
+	}
+	break;
       default:
 	if (args[i] == "-openings")
 	  field = OPENINGS;
@@ -597,6 +683,8 @@ namespace DSchack {
 	  field = NUM_GAMES;
 	else if (args[i] == "-movetime")
 	  field = MOVETIME;
+	else if (args[i] == "-threads")
+	  field = NUM_THREADS;
       }
     }
 
@@ -634,52 +722,20 @@ namespace DSchack {
 
     std::cerr << "Running datagen (" << numGames << " games) with opening book \"" << openingBook << "\"\n";
 
-    AutoEngine engine;
-    for (int i = 0; i < numGames; i++) {
-      Position startpos = openings[i];
-      Position pos = startpos;
-      std::vector<Move> moves;
+    DatagenState state;
+    state.numGames = numGames;
+    state.currentGameIndex = 0;
+    state.movetime = movetime;
 
-      std::vector<std::pair<std::string, int>> savedPositions;
+    std::vector<std::thread> threads;
 
-      engine.newGame();
-      int result = 0;
+    for (int i = 1; i < numThreads; i++)
+      threads.emplace_back([&](){datagen_thread(state, openings);});
 
-      for (;;) {
-	if (pos.rule50() >= 100)
-	  break;
-	engine.setPosition(pos, moves);
-	if (engine.isRepetitionDraw(1) || engine.isMaterialDraw())
-	  break;
+    datagen_thread(state, openings);
 
-	Move move;
-	std::optional<int> optScore;
-	std::tie(move, optScore) = engine.search(movetime);
-
-	if (optScore) {
-	  int score = optScore.value();
-
-	  if (score >= 10000 || score <= -10000) {
-	    result = (score >= 0) ? 1 : -1;
-	    break;
-	  }
-
-	  if (!score)
-	    break;
-
-	  if (!move.isCapture() && !move.isEnPassant())
-	    savedPositions.push_back(std::make_pair(pos.toFEN(), score));
-	}
-
-	moves.push_back(move);
-	pos.makeMove(move);
-      }
-
-      for (std::pair<std::string, int> saved : savedPositions) {
-	std::cout << saved.first << " " << saved.second << " "
-		  << (result == -1 ? "b" : result == 1 ? "w" : "d") << "\n";
-      }
-    }
+    for (std::thread &t : threads)
+      t.join();
 
     return 0;
   }
