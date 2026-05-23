@@ -139,8 +139,8 @@ namespace DSchack {
     TranspositionTable *m_tt;
     uint64_t m_numNodes = 0;
     uint64_t m_numNodesPerS = 0;
-    uint64_t m_lastPeriodicInfo;
-    int m_maxPlySearched;
+    uint64_t m_lastPeriodicInfo = 0;
+    int m_maxPlySearched = 0;
 
     MoveHistory m_moveHistory[2];
 
