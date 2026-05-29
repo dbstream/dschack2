@@ -24,6 +24,13 @@ namespace DSchack {
 
   struct TimeOverToken {}; // A dummy struct which is thrown when the search timeouts
 
+  enum NodeType {
+    RootNode,
+    PVNode,
+    CutNode,
+    AllNode
+  };
+
   struct Node {
     int ply;
     int staticEval;
@@ -372,9 +379,12 @@ private:
     }
 
     /* Quiescence search routine. */
-    template<bool IsPV>
+    template<NodeType Type>
     int qsearch(Node *n, int alpha, int beta)
     {
+      constexpr bool IsPV = Type == RootNode || Type == PVNode;
+      constexpr NodeType ChildType = IsPV ? PVNode : ((Type == CutNode) ? AllNode : CutNode);
+
       const Position &pos = n->pos;
       int ply = n->ply;
 
@@ -444,7 +454,7 @@ private:
 	if (ttMove.isCapture() || inCheck) {
 	  /* Search the TT move first.  */
 	  Node *next = makeMove(n, ttMove);
-	  int score = -qsearch<IsPV>(next, -beta, -alpha);
+	  int score = -qsearch<ChildType>(next, -beta, -alpha);
 	  if (score > bestScore) {
 	    bestScore = score;
 	    bestMove = ttMove;
@@ -473,12 +483,12 @@ private:
 	Node *next = makeMove(n, move);
 	int score;
 
-	if (IsPV && inCheck && hasBestMove && raisedAlpha) {
-	  score = -qsearch<false>(next, -alpha - 1, -alpha);
+	if (Type == PVNode && inCheck && hasBestMove && raisedAlpha) {
+	  score = -qsearch<CutNode>(next, -alpha - 1, -alpha);
 	  if (score > alpha)
-	    score = -qsearch<true>(next, -beta, -alpha);
+	    score = -qsearch<PVNode>(next, -beta, -alpha);
 	} else
-	  score = -qsearch<IsPV>(next, -beta, -alpha);
+	  score = -qsearch<ChildType>(next, -beta, -alpha);
 
 	if (score > bestScore) {
 	  bestScore = score;
@@ -504,17 +514,18 @@ private:
     }
 
     /* Main search routine. */
-    template<bool IsPV>
+    template<NodeType Type>
     int search(Node *n, int alpha, int beta, int depth)
     {
+      constexpr bool IsPV = Type == RootNode || Type == PVNode;
+      constexpr NodeType ChildType = IsPV ? PVNode : ((Type == CutNode) ? AllNode : CutNode);
+
       /* If the depth becomes zero or negative, enter quiescence search here.  */
-      if (depth <= 0)
-	return qsearch<IsPV>(n, alpha, beta);
+      if (Type != RootNode && depth <= 0)
+	return qsearch<Type>(n, alpha, beta);
 
       const Position &pos = n->pos;
       int ply = n->ply;
-
-      bool isRootNode = ply == 0;
 
       if (pos.rule50() >= 100)
 	return 0;
@@ -573,7 +584,7 @@ private:
 
       bool allowNMP = false;
 
-      if (isRootNode) {
+      if (Type == RootNode) {
 	/* If this is the root node, use the best move from the
 	   previous iteration instead of from the TT. This move
 	   is guaranteed to exist (at the beginning, it is any
@@ -619,14 +630,14 @@ private:
       if (depth >= 4 && allowNMP) {
 	Node *next = makeNullMove(n);
 
-	int score = -search<false>(next, -beta, 1 - beta, depth - 4);
+	int score = -search<ChildType>(next, -beta, 1 - beta, depth - 4);
 	if (score >= beta) {
 	  if (depth < 8)
 	    return score;
 
 	  /* To mitigate zugzwang blindness, we perform a
 	     verification search at high depths.  */
-	  score = search<false>(n, beta - 1, beta, depth - 8);
+	  score = search<ChildType>(n, beta - 1, beta, depth - 8);
 	  if (score >= beta)
 	    return score;
 	}
@@ -637,7 +648,7 @@ searchAsHashMove: /* At the root, the best move from the previous iteration is
 		     searched as if it were the hash move.  */
 
 	/* Search the hash move first.  */
-	int score = -search<IsPV>(makeMove(n, ttMove), -beta, -alpha, depth - 1);
+	int score = -search<ChildType>(makeMove(n, ttMove), -beta, -alpha, depth - 1);
 
 	if (score >= beta) {
 	  m_tt->insert(pos, ttMove, beta, LOWERBOUND, depth, ply);
@@ -651,7 +662,7 @@ searchAsHashMove: /* At the root, the best move from the previous iteration is
 	if (score > alpha) {
 	  alpha = score;
 	  raisedAlpha = true;
-	} else if (isRootNode) {
+	} else if (Type == RootNode) {
 	  /* In the root node, return early if the first move fails low.
 	     This happens only because of aspiration windows.  */
 	  return score;
@@ -674,15 +685,15 @@ searchAsHashMove: /* At the root, the best move from the previous iteration is
 	     lets us do a scout search to prove that an other move is
 	     worse.  */
 	  if (IsPV && raisedAlpha) {
-	    score = -search<false>(next, -alpha - 1, -alpha, depth - 1);
+	    score = -search<CutNode>(next, -alpha - 1, -alpha, depth - 1);
 	    /* If the scout search fails high, re-search with our window.  */
 	    if (score > alpha)
-	      score = -search<true>(next, -beta, -alpha, depth - 1);
+	      score = -search<PVNode>(next, -beta, -alpha, depth - 1);
 	  } else {
-	    score = -search<IsPV>(next, -beta, -alpha, depth - 1);
+	    score = -search<ChildType>(next, -beta, -alpha, depth - 1);
 	  }
 	} catch (TimeOverToken token) {
-	  if (!isRootNode)
+	  if (Type != RootNode)
 	    throw;
 
 	  /* In the root node, handle search timeouts specially. We can
@@ -695,7 +706,7 @@ searchAsHashMove: /* At the root, the best move from the previous iteration is
 	if (score >= beta) {
 	  m_tt->insert(pos, move, beta, LOWERBOUND, depth, ply);
 	  mp.betaCutoff(300 * depth - 250, 300 * depth - 250);
-	  if (isRootNode)
+	  if (Type == RootNode)
 	    m_bestRootMove = move;
 	  return score;
 	}
@@ -707,13 +718,13 @@ searchAsHashMove: /* At the root, the best move from the previous iteration is
 	    alpha = score;
 	    raisedAlpha = true;
 	  }
-	  if (isRootNode)
+	  if (Type == RootNode)
 	    m_bestRootMove = move;
 	}
 
 	/* In the root node, now is a very good time to test for
 	   soft-stopping conditions.  */
-	if (isRootNode) {
+	if (Type == RootNode) {
 	  if (shouldSoftStop()) {
 	    if (mp.nextMove())
 	      m_rootIsLowerBound = true;
@@ -757,7 +768,7 @@ public:
 	 an initial guess for the score of a position.  */
       int score;
       try {
-	score = search<true>(root, SCORE_MIN, SCORE_MAX, 1);
+	score = search<RootNode>(root, SCORE_MIN, SCORE_MAX, 1);
       } catch (TimeOverToken token) {
 	// If this timeouts, there is nothing we can do.
 	m_pEngine->getCallbacks().bestmove(m_bestRootMove, std::nullopt);
@@ -794,7 +805,7 @@ public:
 	  beta = SCORE_MAX;
 
 	try {
-	  score = search<true>(root, alpha, beta, depth);
+	  score = search<RootNode>(root, alpha, beta, depth);
 	} catch (TimeOverToken token) {
 	  break;
 	}
@@ -812,7 +823,7 @@ public:
 	    break;
 
 	  try {
-	    score = search<true>(root, SCORE_MIN, SCORE_MAX, depth);
+	    score = search<RootNode>(root, SCORE_MIN, SCORE_MAX, depth);
 	  } catch (TimeOverToken token) {
 	    goto researchTimedOut;
 	  }
