@@ -461,7 +461,7 @@ private:
 	    hasBestMove = true;
 
 	    if (score >= beta) {
-	      m_tt->insert(pos, ttMove, beta, LOWERBOUND, 0, ply);
+	      m_tt->insert(pos, ttMove, score, LOWERBOUND, 0, ply);
 	      return score;
 	    }
 
@@ -496,7 +496,7 @@ private:
 	  hasBestMove = true;
 
 	  if (score >= beta) {
-	    m_tt->insert(pos, move, beta, LOWERBOUND, 0, ply);
+	    m_tt->insert(pos, move, score, LOWERBOUND, 0, ply);
 	    return score;
 	  }
 
@@ -651,7 +651,7 @@ searchAsHashMove: /* At the root, the best move from the previous iteration is
 	int score = -search<ChildType>(makeMove(n, ttMove), -beta, -alpha, depth - 1);
 
 	if (score >= beta) {
-	  m_tt->insert(pos, ttMove, beta, LOWERBOUND, depth, ply);
+	  m_tt->insert(pos, ttMove, score, LOWERBOUND, depth, ply);
 	  m_moveHistory[ply & 1].pushQuiet(ttMove, 300 * depth - 250);
 	  return score;
 	}
@@ -704,7 +704,7 @@ searchAsHashMove: /* At the root, the best move from the previous iteration is
 	}
 
 	if (score >= beta) {
-	  m_tt->insert(pos, move, beta, LOWERBOUND, depth, ply);
+	  m_tt->insert(pos, move, score, LOWERBOUND, depth, ply);
 	  mp.betaCutoff(300 * depth - 250, 300 * depth - 250);
 	  if (Type == RootNode)
 	    m_bestRootMove = move;
