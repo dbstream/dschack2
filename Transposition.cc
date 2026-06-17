@@ -155,7 +155,7 @@ namespace DSchack {
     TTCluster cluster = m_entries[index];
     for (int i = 0; i < 4; i++) {
       if (enc.key == cluster.entries[i].key) {
-	if (!(cluster.entries[i].flags >> 8))
+	if (!(cluster.entries[i].depth))
 	  m_numFull++;
 	cluster.entries[i] = enc;
 	m_entries[index] = cluster;
