@@ -437,17 +437,19 @@ private:
 	   table will always be searched at a depth greater than or
 	   equal to quiescence.  */
 
-	switch(tt->boundType) {
-	case LOWERBOUND:
-	  if (tt->score >= beta)
+	if (!IsPV) {
+	  switch(tt->boundType) {
+	  case LOWERBOUND:
+	    if (tt->score >= beta)
+	      return tt->score;
+	    break;
+	  case UPPERBOUND:
+	    if (tt->score <= alpha)
+	      return tt->score;
+	    break;
+	  default:
 	    return tt->score;
-	  break;
-	case UPPERBOUND:
-	  if (tt->score <= alpha)
-	    return tt->score;
-	  break;
-	default:
-	  return tt->score;
+	  }
 	}
 
 	/* Only search the TT move if it is a capture or we are in check.  */
@@ -533,7 +535,7 @@ private:
 	return 0;
 
       /* Mate Distance Pruning: we cannot possibly achieve a
-	 better checkmate score than alpha, therefore prune
+         better checkmate score than alpha, therefore prune
          this branch immediately. (and the same for beta)  */
       if (MateIn(ply + 1) <= alpha)
 	return alpha;
@@ -601,7 +603,7 @@ private:
 	   (winning or losing checkmate), depth doesn't matter
 	   since this position was searched deep enough to find
 	   a forced checkmate.  */
-	if (tt->depth >= depth || IsDecisive(tt->score)) {
+	if (!IsPV && (tt->depth >= depth || IsDecisive(tt->score))) {
 	  switch(tt->boundType) {
 	  case LOWERBOUND:
 	    if (tt->score >= beta)
@@ -612,8 +614,7 @@ private:
 	      return tt->score;
 	    break;
 	  default:
-	    if (!IsPV)
-	      return tt->score;
+	    return tt->score;
 	  }
 	}
       }
@@ -669,6 +670,9 @@ searchAsHashMove: /* At the root, the best move from the previous iteration is
 	}
       }
 
+      bool futilityPrune  = !inCheck && (staticEval < alpha - 40 * depth);
+      bool futilityReduce = !inCheck && (staticEval < alpha - 20 * depth);
+
       /* Search all moves now, except the ttMove which we already searched.  */
       MovePicker mp(pos, false, m_moveHistory[ply & 1]);
       while (std::optional<Move> optMove = mp.nextMove()) {
@@ -679,18 +683,28 @@ searchAsHashMove: /* At the root, the best move from the previous iteration is
 	Node *next = makeMove(n, move);
 	int score;
 
+	int reduction = 1;
+	if (futilityReduce) {
+	  if (!(move.isCapture() || move.isPromotion() || next->pos.inCheck())) {
+	    if (futilityPrune && bestScore >= SCORE_MIN_NON_DECISIVE)
+	      continue;
+	    else
+	      reduction += 1 + futilityPrune;
+	  }
+	}
+
 	try {
 	  /* Null window search: If we have raised alpha, we already have
 	     an acceptable move and a best score in this position. This
 	     lets us do a scout search to prove that an other move is
 	     worse.  */
 	  if (IsPV && raisedAlpha) {
-	    score = -search<CutNode>(next, -alpha - 1, -alpha, depth - 1);
+	    score = -search<CutNode>(next, -alpha - 1, -alpha, depth - reduction);
 	    /* If the scout search fails high, re-search with our window.  */
 	    if (score > alpha)
-	      score = -search<PVNode>(next, -beta, -alpha, depth - 1);
+	      score = -search<PVNode>(next, -beta, -alpha, depth - reduction);
 	  } else {
-	    score = -search<ChildType>(next, -beta, -alpha, depth - 1);
+	    score = -search<ChildType>(next, -beta, -alpha, depth - reduction);
 	  }
 	} catch (TimeOverToken token) {
 	  if (Type != RootNode)
