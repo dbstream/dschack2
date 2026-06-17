@@ -21,7 +21,6 @@ depth-preferred and one always-replace entry.  */
 namespace DSchack {
   TranspositionTable::TranspositionTable(int megabytes)
   {
-    m_numEntries = 0;
     resize(megabytes); // Default to a 16 MiB transposition table.
   }
 
@@ -35,43 +34,51 @@ namespace DSchack {
     else if (megabytes > 1024)
       megabytes = 1024;
 
-    uint64_t numEntries = (uint64_t) megabytes * 1048576 / sizeof(TTEntryEncoded);
+    uint64_t numClusters = ((uint64_t) megabytes * 1048576 / sizeof(TTCluster));
 
     /* Make sure numEntries is a power of two.  */
-    while (numEntries & ~(numEntries & -numEntries))
-      numEntries &= ~(numEntries & -numEntries);
+    while (numClusters & ~(numClusters & -numClusters))
+      numClusters &= ~(numClusters & -numClusters);
 
-    m_entries.resize(numEntries);
-    m_mask = numEntries - 2;
-    m_numEntries = numEntries;
+    m_entries.resize(numClusters);
+    m_mask = numClusters - 1;
+    m_numClusters = numClusters;
     clear();
   }
 
   void TranspositionTable::clear()
   {
     m_numFull = 0;
-    for (uint64_t i = 0; i < m_numEntries; i++)
-      m_entries[i].key = 0;
+    for (uint64_t i = 0; i < m_numClusters; i++) {
+      for (int j = 0; j < 4; j++) {
+	m_entries[i].entries[j].key = 0;
+	m_entries[i].entries[j].move = 0;
+	m_entries[i].entries[j].score = 0;
+	m_entries[i].entries[j].flags = 0;
+      }
+    }
   }
 
   int TranspositionTable::hashfull()
   {
-    return (1000 * m_numFull) / m_numEntries;
+    return (250 * m_numFull) / m_numClusters;
   }
 
   std::optional<TTEntry> TranspositionTable::probe(const Position &pos, int ply)
   {
     uint64_t key = pos.hash();
-    if (!key)
-      return std::nullopt;
-
     uint64_t index = key & m_mask;
-    TTEntryEncoded enc = m_entries[index];
-    if (enc.key != key)
-      enc = m_entries[index + 1];
-    if (enc.key != key)
-      return std::nullopt;
+    TTCluster cluster = m_entries[index];
+    TTEntryEncoded enc;
+    for (int i = 0; i < 4; i++) {
+      enc = cluster.entries[i];
+      if (enc.key == (key >> 48))
+	goto found;
+    }
 
+    return std::nullopt;
+
+  found:
     int fromSq = enc.move & 63;
     int toSq = (enc.move >> 6) & 63;
     PromoteType promotion = static_cast<PromoteType>(enc.move >> 12);
@@ -83,7 +90,10 @@ namespace DSchack {
     e.move = move.value();
     e.score = enc.score;
     e.boundType = static_cast<BoundType>(enc.flags & 3);
-    e.depth = enc.depth;
+    e.depth = (int) enc.depth - 1;
+
+    if (e.depth < 0)
+      return std::nullopt;
 
     /* Adjust mate scores from depth-to-mate from root to
        depth-to-mate from transposition node. Additionally,
@@ -112,9 +122,7 @@ namespace DSchack {
 				  BoundType boundType, int depth, int ply)
   {
     TTEntryEncoded enc;
-    enc.key = pos.hash();
-    if (!enc.key)
-      return;
+    enc.key = pos.hash() >> 48;
 
     /* Adjust mate scores from depth-to-mate from root to
        depth-to-mate from transposition node.  */
@@ -136,25 +144,42 @@ namespace DSchack {
       }
     }
     enc.score = score;
-    enc.flags = static_cast<uint16_t>(boundType);
-    enc.depth = depth;
+    enc.flags = static_cast<uint16_t>(boundType) | m_generation;
+    enc.depth = depth + 1;
 
-    uint64_t index = enc.key & m_mask;
-    if (m_entries[index].key) {
-      if (enc.depth >= m_entries[index].depth) {
-	if (m_entries[index].key != enc.key) {
-	  if (!m_entries[index + 1].key)
-	    m_numFull++;
-	  m_entries[index + 1] = m_entries[index];
-	}
-      } else if (m_entries[index].key == enc.key)
+    uint64_t index = pos.hash() & m_mask;
+
+    int minDepthIndex = 0;
+    int minDepth = 1024;
+
+    TTCluster cluster = m_entries[index];
+    for (int i = 0; i < 4; i++) {
+      if (enc.key == cluster.entries[i].key) {
+	if (!(cluster.entries[i].flags >> 8))
+	  m_numFull++;
+	cluster.entries[i] = enc;
+	m_entries[index] = cluster;
 	return;
-      else
-	index++;
+      }
+
+      int d = cluster.entries[i].depth;
+      if (d && m_generation == (cluster.entries[i].flags & 0xfc))
+	d += 512;
+      if (d < minDepth) {
+	minDepth = d;
+	minDepthIndex = i;
+      }
     }
 
-    if (!m_entries[index].key)
+    if (!minDepth)
       m_numFull++;
-    m_entries[index] = enc;
+
+    cluster.entries[minDepthIndex] = enc;
+    m_entries[index] = cluster;
+  }
+
+  void TranspositionTable::stepGeneration()
+  {
+    m_generation = m_generation + 0x4;
   }
 } // namespace DSchack

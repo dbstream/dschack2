@@ -863,6 +863,7 @@ researchTimedOut:
   void Search(Engine *engine, SearchGlobalState *state,
 	      TranspositionTable *tt)
   {
+    tt->stepGeneration();
     std::unique_ptr<Searcher> searcher = std::make_unique<Searcher>(engine, state, tt);
     searcher->doSearch();
   }

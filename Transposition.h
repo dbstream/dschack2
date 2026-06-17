@@ -22,7 +22,8 @@ A transposition table entry stores the following information:
 namespace DSchack {
 
   struct TTEntryEncoded {
-    uint64_t key;
+    /* upper 16 bits of the 64-bit position hash key */
+    uint16_t key;
 
     /* move[0..5]: fromSq
        move[6..11]: toSq
@@ -32,13 +33,20 @@ namespace DSchack {
     int16_t score;
 
     /* flags[0]: UPPERBOUND
-       flags[1]: LOWERBOUND  */
-    uint16_t flags;
+       flags[1]: LOWERBOUND
+       flags[2:7]: generation  */
+    uint8_t flags;
 
-    uint16_t depth;
+    uint8_t depth;
   };
 
-  static_assert(sizeof(TTEntryEncoded) == 16 * sizeof(uint8_t));
+  static_assert(sizeof(TTEntryEncoded) == 8 * sizeof(uint8_t));
+
+  struct TTCluster {
+    TTEntryEncoded entries[4];
+  };
+
+  static_assert(sizeof(TTCluster) == 32 * sizeof(uint8_t));
 
   struct TTEntry {
     Move move;
@@ -48,10 +56,11 @@ namespace DSchack {
   };
 
   class TranspositionTable {
-    std::vector<TTEntryEncoded> m_entries;
-    uint64_t m_mask;
-    uint64_t m_numEntries;
-    uint64_t m_numFull;
+    std::vector<TTCluster> m_entries;
+    uint64_t m_mask = 0;
+    uint64_t m_numClusters = 0;
+    uint64_t m_numFull = 0;
+    uint8_t m_generation = 0;
 
   public:
     TranspositionTable(int megabytes = 16);
@@ -68,5 +77,7 @@ namespace DSchack {
 
     void insert(const Position &pos, Move move, int score,
 		BoundType boundType, int depth, int ply);
+
+    void stepGeneration();
   };
 } // namespace DSchack
