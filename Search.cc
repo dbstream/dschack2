@@ -638,7 +638,7 @@ private:
 
 	  /* To mitigate zugzwang blindness, we perform a
 	     verification search at high depths.  */
-	  score = search<ChildType>(n, beta - 1, beta, depth - 8);
+	  score = search<Type>(n, beta - 1, beta, depth - 8);
 	  if (score >= beta)
 	    return score;
 	}
