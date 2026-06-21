@@ -676,6 +676,7 @@ namespace DSchack {
     int movetime = 0;
     int nodes = 0;
     int numThreads = 1;
+    bool noShuffle = false;
 
     for (int i = 1; i < (int) args.size(); i++) {
       switch (field) {
@@ -726,6 +727,8 @@ namespace DSchack {
 	  field = NODES;
 	else if (args[i] == "-threads")
 	  field = NUM_THREADS;
+	else if (args[i] == "-noshuffle")
+	  noShuffle = true;
       }
     }
 
@@ -758,8 +761,11 @@ namespace DSchack {
       return 1;
     }
 
-    std::default_random_engine rng;
-    std::ranges::shuffle(openings, rng);
+    if (!noShuffle) {
+      std::random_device rd;
+      std::default_random_engine rng(rd());
+      std::ranges::shuffle(openings, rng);
+    }
 
     if (numGames > (int) openings.size())
       numGames = (int) openings.size();
