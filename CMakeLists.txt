@@ -13,6 +13,7 @@ target_compile_options(DSchack PUBLIC -march=native)
 
 target_sources(DSchack PRIVATE
   "Bitboard.cc"
+  "Datagen.cc"
   "Engine.cc"
   "Evaluate.cc"
   "Main.cc"

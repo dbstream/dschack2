@@ -136,7 +136,7 @@ namespace DSchack {
 						&m_internal->transpositionTable));
   }
 
-  void Engine::goSynchronous(int movetime)
+  void Engine::goSynchronous(int movetime, int nodes)
   {
     if (movetime < 0)
       movetime = 0;
@@ -148,14 +148,16 @@ namespace DSchack {
     s.stopRequested.store(false, std::memory_order_relaxed);
     s.ponder.store(false, std::memory_order_relaxed);
     s.infinite = false;
-    s.fixed_movetime = true;
+    s.fixed_movetime = movetime > 0;
     s.ctime = 0;
     s.cinc = 0;
     s.movestogo = 0;
     s.movetime = movetime;
-    s.nodes = 0;
-    s.softTimeLimit = s.goTime + movetime;
-    s.hardTimeLimit = s.goTime + movetime;
+    s.nodes = nodes;
+    if (movetime) {
+      s.softTimeLimit = s.goTime + movetime;
+      s.hardTimeLimit = s.goTime + movetime;
+    }
     Search(this, &s, &m_internal->transpositionTable);
   }
 

@@ -17,9 +17,11 @@ the UCI protocol, which is used for user<->engine communication.  */
 #include <thread>
 #include <vector>
 #include <mutex>
+#include <unistd.h>
 
 #include "AutoEngine.h"
 #include "Bitboard.h"
+#include "Datagen.h"
 #include "Engine.h"
 #include "MoveGen.h"
 #include "Position.h"
@@ -555,6 +557,7 @@ namespace DSchack {
     int numGames;
     int currentGameIndex;
     int movetime;
+    int nodes;
   };
 
   void datagen_thread(DatagenState &state, const std::vector<Position> &openings)
@@ -579,11 +582,10 @@ namespace DSchack {
       Position startpos = openings[i];
       Position pos = startpos;
       std::vector<Move> moves;
-
-      std::vector<std::pair<std::string, int>> savedPositions;
+      std::vector<int> scores;
 
       engine.newGame();
-      int result = 0;
+      int result = 1;
 
       for (;;) {
 	if (pos.rule50() >= 100)
@@ -594,33 +596,29 @@ namespace DSchack {
 
 	Move move;
 	std::optional<int> optScore;
-	std::tie(move, optScore) = engine.search(state.movetime);
+	std::tie(move, optScore) = engine.search(state.movetime, state.nodes);
 
-	if (optScore) {
-	  int score = optScore.value();
+	int score = 0;
+	if (optScore)
+	  score = optScore.value();
 
-	  if (score >= 10000 || score <= -10000) {
-	    result = (score >= 0) ? 1 : -1;
-	    break;
-	  }
-
-	  if (!score)
-	    break;
-
-	  if (!move.isCapture() && !move.isEnPassant() && !pos.inCheck())
-	    savedPositions.push_back(std::make_pair(pos.toFEN(), score));
+	if (score >= 10000 || score <= -10000) {
+	  if (pos.sideToMove() == BLACK)
+	    result = (score >= 0) ? 0 : 2;
+	  else
+	    result = (score >= 0) ? 2 : 0;
+	  break;
 	}
 
 	moves.push_back(move);
+	scores.push_back(score);
 	pos.makeMove(move);
       }
 
+      std::vector<uint8_t> output = EncodeGame(startpos, moves, scores, result);
       gCoutMutex.lock();
-      std::cerr << "Finished game " << (i + 1) << "/" << state.numGames << ".\n";
-      for (std::pair<std::string, int> saved : savedPositions) {
-	std::cout << saved.first << " " << saved.second << " "
-		  << (result == -1 ? "b" : result == 1 ? "w" : "d") << "\n";
-      }
+      std::cerr << "Finished game " << (i + 1) << "/" << state.numGames << ". (" << moves.size() << " moves, result=" << result << ")\n";
+      write(1, output.data(), output.size());
       gCoutMutex.unlock();
     }
   }
@@ -636,6 +634,7 @@ namespace DSchack {
       OPENINGS,
       NUM_GAMES,
       MOVETIME,
+      NODES,
       NUM_THREADS
     };
 
@@ -643,7 +642,8 @@ namespace DSchack {
 
     std::string openingBook;
     int numGames = 1;
-    int movetime = 20;
+    int movetime = 0;
+    int nodes = 0;
     int numThreads = 1;
 
     for (int i = 1; i < (int) args.size(); i++) {
@@ -658,6 +658,14 @@ namespace DSchack {
 	  int value = parseInt(args[i]);
 	  if (value > 0)
 	    numGames = value;
+	}
+	break;
+      case NODES:
+	field = NONE;
+	{
+	  int value = parseInt(args[i]);
+	  if (value > 0)
+	    nodes = value;
 	}
 	break;
       case MOVETIME:
@@ -683,10 +691,15 @@ namespace DSchack {
 	  field = NUM_GAMES;
 	else if (args[i] == "-movetime")
 	  field = MOVETIME;
+	else if (args[i] == "-nodes")
+	  field = NODES;
 	else if (args[i] == "-threads")
 	  field = NUM_THREADS;
       }
     }
+
+    if (!movetime && !nodes)
+      movetime = 20;
 
     std::vector<Position> openings;
 
@@ -726,6 +739,7 @@ namespace DSchack {
     state.numGames = numGames;
     state.currentGameIndex = 0;
     state.movetime = movetime;
+    state.nodes = nodes;
 
     std::vector<std::thread> threads;
 

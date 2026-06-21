@@ -159,10 +159,11 @@ namespace DSchack {
     /** goSynchronous: search the current position without
 	using a worker thread.
     @movetime: Time to spend on this move in milliseconds.
+    @nodes: Nodes limit for this move.
 
     Do not mix use of go with goSynchronous for the same
     Engine instance.  */
-    void goSynchronous(int movetime);
+    void goSynchronous(int movetime, int nodes);
 
     /** ponderhit: transition the pondering search into a
 	normal search.

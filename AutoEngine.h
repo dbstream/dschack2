@@ -34,7 +34,7 @@ namespace DSchack {
 	      m_engine->m_score = score;
 	  } else {
 	    if (m_engine->m_score.value() > score)
-	      m_engine->m_score = std::nullopt;
+	      m_engine->m_score = score;
 	  }
 	}
       }
@@ -72,10 +72,10 @@ namespace DSchack {
       m_engine.setPosition(pos, pastMoves);
     }
 
-    std::tuple<Move, std::optional<int>> search(int movetime)
+    std::tuple<Move, std::optional<int>> search(int movetime, int nodes)
     {
       m_score = std::nullopt;
-      m_engine.goSynchronous(movetime);
+      m_engine.goSynchronous(movetime, nodes);
       return {m_bestMove, m_score};
     }
 
