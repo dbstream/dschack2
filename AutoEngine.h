@@ -88,5 +88,10 @@ namespace DSchack {
     {
       return m_engine.isMaterialDraw();
     }
+
+    bool hasNoLegalMoves()
+    {
+      return m_engine.hasNoLegalMoves();
+    }
   };
 } // namespace DSchack

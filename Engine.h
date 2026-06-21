@@ -177,5 +177,8 @@ namespace DSchack {
 
     /** isMaterialDraw: test if the position is a draw by insufficient material.  */
     bool isMaterialDraw();
+
+    /** hasNoLegalMoves: test if the position has no legal moves.  */
+    bool hasNoLegalMoves();
   };
 } // namespace DSchack

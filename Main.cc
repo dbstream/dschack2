@@ -586,13 +586,22 @@ namespace DSchack {
 
       engine.newGame();
       int result = 1;
+      bool stalemated = false;
+      bool checkmated = false;
+      bool repetition = false;
 
       for (;;) {
+	engine.setPosition(pos, moves);
+	if (engine.hasNoLegalMoves()) {
+	  stalemated = true;
+	  break;
+	}
 	if (pos.rule50() >= 100)
 	  break;
-	engine.setPosition(pos, moves);
-	if (engine.isRepetitionDraw(1) || engine.isMaterialDraw())
+	if (engine.isRepetitionDraw(1) || engine.isMaterialDraw()) {
+	  repetition = true;
 	  break;
+	}
 
 	Move move;
 	std::optional<int> optScore;
@@ -602,7 +611,9 @@ namespace DSchack {
 	if (optScore)
 	  score = optScore.value();
 
-	if (score >= 10000 || score <= -10000) {
+	if (score >= 600 || score <= -600) {
+	  if (IsDecisive(score))
+	    checkmated = true;
 	  if (pos.sideToMove() == BLACK)
 	    result = (score >= 0) ? 0 : 2;
 	  else
@@ -615,9 +626,29 @@ namespace DSchack {
 	pos.makeMove(move);
       }
 
+      std::string resultString;
+      if (result == 1) {
+	if (repetition)
+	  resultString = "draw by repetition";
+	else if (stalemated)
+	  resultString = "draw by stalemate";
+	else
+	  resultString = "draw by 50-moves rule";
+      } else if (result == 2) {
+	if (checkmated)
+	  resultString = "white wins by checkmate";
+	else
+	  resultString = "white wins by adjudication";
+      } else {
+	if (checkmated)
+	  resultString = "black wins by checkmate";
+	else
+	  resultString = "black wins by adjudication";
+      }
+
       std::vector<uint8_t> output = EncodeGame(startpos, moves, scores, result);
       gCoutMutex.lock();
-      std::cerr << "Finished game " << (i + 1) << "/" << state.numGames << ". (" << moves.size() << " moves, result=" << result << ")\n";
+      std::cerr << "Finished game " << (i + 1) << "/" << state.numGames << ". (" << moves.size() << " moves, " << resultString << ")\n";
       write(1, output.data(), output.size());
       gCoutMutex.unlock();
     }

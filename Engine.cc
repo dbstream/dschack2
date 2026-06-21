@@ -6,6 +6,7 @@
 #include <iostream>
 
 #include "Engine.h"
+#include "MoveGen.h"
 #include "Search.h"
 #include "Threads.h"
 #include "Transposition.h"
@@ -244,5 +245,13 @@ namespace DSchack {
     if (numBishops >= 1)
       return false;
     return numKnights < 3;
+  }
+
+  bool Engine::hasNoLegalMoves()
+  {
+    Move dummy_buffer[1000];
+    Move *pBegin = &dummy_buffer[0];
+    Move *pEnd = GenerateLegalMoves(m_position, pBegin);
+    return pBegin == pEnd;
   }
 }
